@@ -1,12 +1,14 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
-#include <cstdint>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-enum class ErrorCode {
+enum class ErrorCode
+{
   BadRequest,
   Unauthorized,
   UnknownGame,
@@ -29,7 +31,8 @@ enum class ErrorCode {
   Internal
 };
 
-struct Error {
+struct Error
+{
   ErrorCode code = ErrorCode::Internal;
   std::string message;
   std::optional<std::int64_t> max_lifetime_sec;
@@ -38,4 +41,4 @@ struct Error {
 const char* error_code_string(ErrorCode code);
 int http_status(ErrorCode code);
 
-}  // namespace matchmaker
+} // namespace matchmaker

@@ -1,13 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <filesystem>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
 std::int64_t wall_ms();
 std::string hex_encode(std::string_view bytes);
@@ -23,4 +24,4 @@ std::string gzip_compress(std::string_view input);
 std::optional<std::string> gzip_decompress(std::string_view input);
 int env_int(const char* key, int fallback);
 
-}  // namespace matchmaker
+} // namespace matchmaker

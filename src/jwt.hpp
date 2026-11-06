@@ -5,9 +5,11 @@
 #include <cstdint>
 #include <string>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-struct JwtClaims {
+struct JwtClaims
+{
   std::string sub;
   std::string game_id;
   std::string jti;
@@ -19,4 +21,4 @@ struct JwtClaims {
 std::string jwt_sign(const JwtClaims& claims, std::string_view secret);
 Result<JwtClaims> jwt_verify(std::string_view token, std::string_view secret, std::int64_t now_sec);
 
-}  // namespace matchmaker
+} // namespace matchmaker

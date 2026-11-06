@@ -7,10 +7,12 @@
 #include <string>
 #include <vector>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-class Store {
- public:
+class Store
+{
+public:
   virtual ~Store() = default;
   virtual void migrate() = 0;
   virtual std::map<std::string, std::string> load_config() = 0;
@@ -25,4 +27,4 @@ class Store {
 
 std::unique_ptr<Store> open_sqlite_store(const std::string& path);
 
-}  // namespace matchmaker
+} // namespace matchmaker

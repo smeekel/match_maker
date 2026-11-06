@@ -6,14 +6,17 @@
 #include <exception>
 #include <iostream>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-void write_log(Store* store, LogLevel level, std::string category, std::string message, std::string game_id,
-               std::string detail_json) {
+void write_log(Store* store, LogLevel level, std::string category, std::string message,
+               std::string game_id, std::string detail_json)
+{
   const char* name = level == LogLevel::Error ? "error" : level == LogLevel::Warn ? "warn" : "info";
   std::cout << wall_ms() << ' ' << name << ' ' << category << ' ' << message << '\n';
   std::cout.flush();
-  if (!store) {
+  if( !store )
+  {
     return;
   }
   LogRecord row;
@@ -24,11 +27,14 @@ void write_log(Store* store, LogLevel level, std::string category, std::string m
   row.message = std::move(message);
   row.game_id = std::move(game_id);
   row.detail_json = std::move(detail_json);
-  try {
+  try
+  {
     store->insert_log(row);
-  } catch (const std::exception& ex) {
+  }
+  catch( const std::exception& ex )
+  {
     std::cerr << "log insert failed: " << ex.what() << '\n';
   }
 }
 
-}  // namespace matchmaker
+} // namespace matchmaker

@@ -7,9 +7,11 @@
 #include <unordered_map>
 #include <vector>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-struct SystemConfig {
+struct SystemConfig
+{
   std::string listen = "0.0.0.0:443";
   std::string public_host = "localhost";
   std::string public_url = "https://localhost";
@@ -54,15 +56,22 @@ struct SystemConfig {
   static SystemConfig from_map(const std::map<std::string, std::string>& values);
 };
 
-class Catalog {
- public:
+class Catalog
+{
+public:
   void replace(SystemConfig system, std::vector<Region> regions, std::vector<GameRecord> games);
-  const SystemConfig& system() const { return system_; }
-  const std::vector<Region>& regions() const { return regions_; }
+  const SystemConfig& system() const
+  {
+    return system_;
+  }
+  const std::vector<Region>& regions() const
+  {
+    return regions_;
+  }
   const GameRecord* game(const std::string& id) const;
   std::vector<GameRecord> games() const;
 
- private:
+private:
   SystemConfig system_;
   std::vector<Region> regions_;
   std::unordered_map<std::string, GameRecord> games_;
@@ -70,4 +79,4 @@ class Catalog {
 
 void clamp_game(GameRecord& game, const SystemConfig& system);
 
-}  // namespace matchmaker
+} // namespace matchmaker

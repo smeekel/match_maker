@@ -5,15 +5,19 @@
 
 #include <filesystem>
 
-namespace matchmaker::test {
+namespace matchmaker::test
+{
 
-inline std::filesystem::path make_temp_dir() {
+inline std::filesystem::path make_temp_dir()
+{
   auto path = std::filesystem::temp_directory_path() / ("matchmaker-" + uuid_v4());
   std::filesystem::create_directories(path);
   return path;
 }
 
-inline GameRecord sample_game(std::string id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", std::string token = "secret") {
+inline GameRecord sample_game(std::string id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                              std::string token = "secret")
+{
   GameRecord game;
   game.id = std::move(id);
   game.name = "Test";
@@ -26,4 +30,4 @@ inline GameRecord sample_game(std::string id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa
   return game;
 }
 
-}  // namespace matchmaker::test
+} // namespace matchmaker::test
