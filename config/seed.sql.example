@@ -1,0 +1,17 @@
+-- Example game seed. token_hash is SHA-256 hex of the literal example-token.
+-- Replace the id, name, and hash before use. Run this against the matchmaker SQLite file.
+
+INSERT INTO games (
+  id, name, token_hash, promote_host_on_leave, allow_join_in_progress, limits_json, created_at_ms
+) VALUES (
+  '11111111-1111-4111-8111-111111111111',
+  'Example',
+  '4d1566a1d7df42a8517456d60ea06ed284e535cfe4c956aa6ee172dbcdf945f7',
+  0,
+  0,
+  '{"max_players_per_lobby":16,"max_password_length":64,"max_concurrent_channels":256,"max_channels_per_lobby":32,"max_channel_lifetime_sec":3600,"max_idle_sec":60,"allow_tcp":false,"max_lobbies":1000,"max_metadata_bytes":8192,"max_chat_bytes":512,"max_custom_bytes":4096,"max_alias_bytes":32}',
+  0
+);
+
+INSERT INTO game_modes(game_id, name, players) VALUES
+  ('11111111-1111-4111-8111-111111111111', 'duel', 2);
