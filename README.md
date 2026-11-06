@@ -1,8 +1,8 @@
 # matchmaker
 
-One process hosts lobbies and matchmaking for any number of games. Clients speak HTTPS and a lobby WebSocket to this process. Game payloads go through relay ports the process allocates. There is no hole punching and no player UI.
+One process hosts lobbies for any number of games. Clients speak HTTPS and a lobby WebSocket to this process. Game payloads go through relay ports the process allocates, always between the host and one other member. There is no hole punching and no player UI.
 
-Sessions, tickets, lobbies, and forwarders live in memory. SQLite holds configuration, games, and operational logs. Restarting the process drops every live session, and a JWT from a previous process is rejected.
+Sessions, lobbies, and forwarders live in memory. SQLite holds configuration, games, and operational logs. Restarting the process drops every live session, and a JWT from a previous process is rejected.
 
 The wire API is specified in [PROTOCOL.md](PROTOCOL.md).
 
@@ -48,7 +48,7 @@ UPDATE config SET value = 'https://match.example.com' WHERE key = 'public_url';
 
 Migrations are read from `MATCHMAKER_MIGRATIONS`, then from `migrations/sqlite` beside the executable, then from the source tree.
 
-`SIGINT` and `SIGTERM` close lobby sockets and exit. `SIGHUP` and `SIGBREAK` reload config, regions, and games from the database. The listen address, stats address, and TLS files stay as they were at startup. Relay channels already allocated keep the lifetime they were granted.
+`SIGINT` and `SIGTERM` close lobby sockets and exit. `SIGHUP` and `SIGBREAK` reload config, regions, and games from the database. The listen address, stats address, TLS files, and worker count stay as they were at startup. Relay channels already allocated keep the lifetime they were granted.
 
 `stats_listen` (default `127.0.0.1:7711`) is plaintext. One connection receives one JSON document and the server closes. See [PROTOCOL.md](PROTOCOL.md).
 
@@ -74,18 +74,17 @@ VALUES (
   '{"max_players_per_lobby":4,"max_lobbies":100}',
   CAST(strftime('%s','now') AS INTEGER) * 1000
 );
-
-INSERT INTO game_modes(game_id, name, players)
-VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'duel', 2);
 ```
 
-`limits_json` keys, each optional: `max_players_per_lobby`, `max_password_length`, `max_concurrent_channels`, `max_channels_per_lobby`, `max_channel_lifetime_sec`, `max_idle_sec`, `allow_tcp`, `max_lobbies`, `max_metadata_bytes`, `max_chat_bytes`, `max_custom_bytes`, `max_alias_bytes`. Game limits are clamped to the system caps. TCP relays also require `relay_tcp_enabled`.
+Games do not have modes. A game advertises modes, maps, or rules by writing lobby metadata; list, get, and the lobby snapshot all include that object.
+
+`limits_json` keys, each optional: `max_players_per_lobby`, `max_password_length`, `max_concurrent_channels`, `max_channel_lifetime_sec`, `max_idle_sec`, `allow_tcp`, `max_lobbies`, `max_metadata_bytes`, `max_chat_bytes`, `max_custom_bytes`, `max_alias_bytes`. A lobby may hold at most as many relay channels as it has player slots, and every channel connects the host to one other member. Game limits are clamped to the system caps. TCP relays also require `relay_tcp_enabled`.
 
 A reload picks up inserted and edited games. `promote_host_on_leave` hands the lobby to the earliest remaining member when the host leaves; otherwise the lobby ends. `allow_join_in_progress` lets the host offer late join after the match starts.
 
 ## Configuration
 
-Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`. `threads` of `0` uses the hardware concurrency.
+Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`.
 
 | Key | Default | Role |
 | --- | --- | --- |
@@ -95,11 +94,11 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`. `t
 | `region_id` | `local` | This process's region |
 | `jwt_secret` | `change-me` | HS256 key; replace before any real use |
 | `jwt_ttl_sec` | `900` | Access-token lifetime |
-| `admit_sec` | `60` | How long a formed match waits for the host socket |
+| `admit_sec` | `60` | How long a new lobby waits for the host socket |
 | `join_hold_sec` | `10` | How long an HTTPS join holds a slot |
 | `host_heartbeat_interval_sec` | `2` | Expected host heartbeat spacing |
 | `host_heartbeat_misses` | `3` | Misses before the host is treated as gone |
-| `threads` | `0` | Worker threads; `0` means one per core |
+| `max_threads` | `1` | Worker threads. Fixed at startup. Values below 1 run as 1 |
 | `stats_listen` | `127.0.0.1:7711` | Localhost stats bind (fixed at startup) |
 | `tls_cert` | empty | PEM certificate chain (required) |
 | `tls_key` | empty | PEM private key (required) |
@@ -127,7 +126,6 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`. `t
 | `relay_tcp_enabled` | `0` | Allow TCP relays when the game also sets `allow_tcp` |
 | `auth_fail_limit` | `20` | Failed auths per source before rate limiting |
 | `auth_fail_window_sec` | `60` | Auth failure window |
-| `ticket_wait_cap_ms` | `25000` | Cap on `wait_ms` for ticket polls |
 | `probe_timeout_ms` | `500` | Host RTT probe timeout |
 
 `regions` rows are `id`, `public_url`, and `sort_order`. The default row is `local` / `https://localhost`.
@@ -136,7 +134,7 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`. `t
 
 | Path | Contents |
 | --- | --- |
-| `src/` | Server: HTTPS, lobby WebSocket, matchmaking queue, UDP/TCP relay, SQLite, JWT |
+| `src/` | Server: HTTPS, lobby WebSocket, UDP/TCP relay, SQLite, JWT |
 | `include/matchmaker/client.hpp` | In-tree HTTPS and WebSocket client linked by the tests |
 | `tests/` | doctest suites (`matchmaker_tests`) |
 | `migrations/sqlite/` | Schema and default config |
@@ -144,4 +142,4 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`. `t
 
 ## Logs
 
-The `logs` table records startup, shutdown, config reload, auth failure (game id only), lobby create and close, match formed, relay allocate and release, and errors. Chat, ready state, custom messages, aliases, and forwarded packets are not logged. Rows older than `retention_days` are pruned at startup and about once an hour.
+The `logs` table records startup, shutdown, config reload, auth failure (game id only), lobby create and close, relay allocate and release, and errors. Chat, ready state, custom messages, aliases, and forwarded packets are not logged. Rows older than `retention_days` are pruned at startup and about once an hour.

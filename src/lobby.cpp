@@ -268,60 +268,6 @@ Result<nlohmann::json> LobbyService::create(const Actor& actor, Time now)
   return summary(lobbies_.at(id));
 }
 
-Result<std::string> LobbyService::create_match(const std::string& game_id,
-                                               const std::vector<Actor>& users, Time now)
-{
-  const auto* game = rules(game_id);
-  if( !game )
-  {
-    return Err(ErrorCode::UnknownGame, "unknown game");
-  }
-  if( users.empty() )
-  {
-    return Err(ErrorCode::BadRequest, "empty match");
-  }
-  if( static_cast<int>(users.size()) > player_cap(*game) )
-  {
-    return Err(ErrorCode::Limit, "match larger than player cap");
-  }
-  if( lobby_count(game_id) >= game->limits.max_lobbies )
-  {
-    return Err(ErrorCode::Limit, "lobby limit");
-  }
-  for( const auto& user : users )
-  {
-    if( user.game_id != game_id )
-    {
-      return Err(ErrorCode::UnknownGame, "cross-game match");
-    }
-    if( user_in_lobby(user.user_id) )
-    {
-      return Err(ErrorCode::AlreadyInLobby, "player already in a lobby");
-    }
-  }
-  Lobby lobby;
-  lobby.id = uuid_v4();
-  lobby.game_id = game_id;
-  lobby.host_id = users.front().user_id;
-  lobby.phase = "closed";
-  lobby.slots = player_cap(*game);
-  lobby.seq = next_seq_++;
-  for( std::size_t i = 0; i < users.size(); ++i )
-  {
-    Member member;
-    member.user_id = users[i].user_id;
-    member.alias = users[i].alias;
-    member.external_id = users[i].external_id;
-    member.hold = i == 0 ? Member::Hold::Host : Member::Hold::Match;
-    member.deadline = now + timing_.admit;
-    lobby.members.push_back(std::move(member));
-    user_lobby_[users[i].user_id] = lobby.id;
-  }
-  const auto id = lobby.id;
-  lobbies_.emplace(id, std::move(lobby));
-  return id;
-}
-
 Result<nlohmann::json> LobbyService::begin_join(const Actor& actor, const std::string& lobby_id,
                                                 const std::optional<std::string>& password,
                                                 Time now)
@@ -878,9 +824,7 @@ Result<nlohmann::json> LobbyService::list(const std::string& game_id, const std:
   std::size_t i = start;
   for( ; i < rows.size() && static_cast<int>(items.size()) < limit; ++i )
   {
-    auto item = summary(*rows[i]);
-    item.erase("metadata");
-    items.push_back(std::move(item));
+    items.push_back(summary(*rows[i]));
   }
   nlohmann::json body = {{"lobbies", items}, {"next_cursor", nullptr}};
   if( i < rows.size() && !items.empty() )

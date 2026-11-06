@@ -24,13 +24,6 @@ CREATE TABLE IF NOT EXISTS games (
   created_at_ms INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS game_modes (
-  game_id TEXT NOT NULL REFERENCES games(id),
-  name TEXT NOT NULL,
-  players INTEGER NOT NULL,
-  PRIMARY KEY (game_id, name)
-);
-
 CREATE TABLE IF NOT EXISTS logs (
   id TEXT PRIMARY KEY,
   ts_ms INTEGER NOT NULL,
@@ -54,7 +47,7 @@ INSERT INTO config(key, value) VALUES
   ('join_hold_sec', '10'),
   ('host_heartbeat_interval_sec', '2'),
   ('host_heartbeat_misses', '3'),
-  ('threads', '0'),
+  ('max_threads', '1'),
   ('stats_listen', '127.0.0.1:7711'),
   ('tls_cert', ''),
   ('tls_key', ''),
@@ -82,7 +75,6 @@ INSERT INTO config(key, value) VALUES
   ('relay_tcp_enabled', '0'),
   ('auth_fail_limit', '20'),
   ('auth_fail_window_sec', '60'),
-  ('ticket_wait_cap_ms', '25000'),
   ('probe_timeout_ms', '500')
 ON CONFLICT(key) DO NOTHING;
 

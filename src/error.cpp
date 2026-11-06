@@ -35,14 +35,10 @@ const char* error_code_string(ErrorCode code)
     return "lifetime_exceeds_limit";
   case ErrorCode::TooLarge:
     return "too_large";
-  case ErrorCode::UnknownUser:
-    return "unknown_user";
-  case ErrorCode::ModeNotConfigured:
-    return "mode_not_configured";
-  case ErrorCode::AlreadyInLobby:
-    return "already_in_lobby";
-  case ErrorCode::AlreadyQueued:
-    return "already_queued";
+    case ErrorCode::UnknownUser:
+      return "unknown_user";
+    case ErrorCode::AlreadyInLobby:
+      return "already_in_lobby";
   case ErrorCode::NotFound:
     return "not_found";
   case ErrorCode::Internal:
@@ -66,18 +62,16 @@ int http_status(ErrorCode code)
   case ErrorCode::NotMember:
     return 403;
   case ErrorCode::NotFound:
-  case ErrorCode::UnknownUser:
-  case ErrorCode::ModeNotConfigured:
-    return 404;
+    case ErrorCode::UnknownUser:
+      return 404;
   case ErrorCode::LobbyNotOpen:
   case ErrorCode::LateJoinDisabled:
   case ErrorCode::Full:
   case ErrorCode::CodeTaken:
   case ErrorCode::Limit:
   case ErrorCode::LifetimeExceedsLimit:
-  case ErrorCode::AlreadyInLobby:
-  case ErrorCode::AlreadyQueued:
-    return 409;
+    case ErrorCode::AlreadyInLobby:
+      return 409;
   case ErrorCode::TooLarge:
     return 413;
   case ErrorCode::Internal:

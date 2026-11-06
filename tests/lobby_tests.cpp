@@ -144,7 +144,7 @@ TEST_CASE("join rules cover slots, phase, lock, and short codes")
   auto listed = world.lobbies.list(sample_game().id, "", 50);
   REQUIRE(listed);
   CHECK((*listed)["lobbies"].size() == 1);
-  CHECK_FALSE((*listed)["lobbies"][0].contains("metadata"));
+  CHECK((*listed)["lobbies"][0].contains("metadata"));
 }
 
 TEST_CASE("host leave, heartbeat, admission, and game isolation")
@@ -218,23 +218,4 @@ TEST_CASE("host leave, heartbeat, admission, and game isolation")
   auto foreign_list = world.lobbies.list(other_id, "", 50);
   REQUIRE(foreign_list);
   CHECK((*foreign_list)["lobbies"].empty());
-}
-
-TEST_CASE("match admission joins a closed locked lobby")
-{
-  World world;
-  const auto now = Clock::now();
-  std::vector<Actor> users{world.user("p0"), world.user("p1")};
-  auto created = world.lobbies.create_match(sample_game().id, users, now);
-  REQUIRE(created);
-  REQUIRE(world.lobbies.set_password(world.user("p0"), *created, std::string("locked")));
-  auto voluntary =
-      world.lobbies.begin_join(world.user("stranger"), *created, std::string("locked"), now);
-  REQUIRE_FALSE(voluntary);
-  CHECK(voluntary.error().code == ErrorCode::LobbyNotOpen);
-  auto admitted = world.lobbies.complete_connect("p1", *created, now);
-  REQUIRE(admitted);
-  CHECK((*admitted)["op"] == "lobby_snapshot");
-  CHECK((*admitted)["phase"] == "closed");
-  CHECK_FALSE((*admitted).contains("password"));
 }

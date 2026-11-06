@@ -49,7 +49,7 @@ struct Server
       store->set_config("relay_port_start", "54100");
       store->set_config("relay_port_end", "54200");
       store->set_config("relay_tcp_enabled", "1");
-      store->set_config("threads", "1");
+      store->set_config("max_threads", "1");
       store->set_config("http_gzip_min_bytes", "1");
       store->set_config("host_heartbeat_interval_sec", "60");
       store->set_config("host_heartbeat_misses", "10");
@@ -246,11 +246,6 @@ TEST_CASE("https then websocket then https")
   CHECK(duplicate.status == 409);
   CHECK(duplicate.body["error"] == "already_in_lobby");
 
-  auto queued_while_in =
-      host.request("POST", "/api/v1/matchmaking/tickets", {{"mode", "duel"}}, host_session.token);
-  CHECK(queued_while_in.status == 409);
-  CHECK(queued_while_in.body["error"] == "already_in_lobby");
-
   host.ws_connect(lobby_id, host_session.token);
   CHECK(host.ws_offered_extensions().find("permessage-deflate") != std::string::npos);
   auto snapshot = host.ws_read(std::chrono::seconds(2));
@@ -265,7 +260,7 @@ TEST_CASE("https then websocket then https")
                                return msg.value("op", "") == "ok";
                              });
   CHECK(phase_ok["id"] == "phase");
-  host.ws_send({{"op", "set_slots"}, {"slots", 2}});
+  host.ws_send({{"op", "set_slots"}, {"slots", 3}});
   read_where(host,
              [](const json& msg)
              {
@@ -283,6 +278,7 @@ TEST_CASE("https then websocket then https")
   REQUIRE(listed.body["lobbies"].size() == 1);
   CHECK(listed.body["lobbies"][0]["locked"] == false);
   CHECK(listed.body["lobbies"][0]["phase"] == "open");
+  CHECK(listed.body["lobbies"][0].contains("metadata"));
 
   auto ping = guest.request("GET", "/api/v1/lobbies/" + lobby_id + "?client_ts=42", {},
                             guest_session.token, false);
@@ -316,6 +312,30 @@ TEST_CASE("https then websocket then https")
                               return msg.value("event", "") == "user_entered";
                             });
   CHECK(entered["user_id"] == guest_session.user_id);
+
+  Client peer = server.client();
+  const auto peer_session = auth(peer, kGame, "secret", "peer");
+  auto peer_joined = peer.request("POST", "/api/v1/lobbies/" + lobby_id + "/join", json::object(),
+                                 peer_session.token);
+  REQUIRE(peer_joined.status == 200);
+  peer.ws_connect(lobby_id, peer_session.token);
+  CHECK(peer.ws_read(std::chrono::seconds(2))["op"] == "lobby_snapshot");
+  read_where(host,
+             [](const json& msg)
+             {
+               return msg.value("event", "") == "user_entered";
+             });
+  host.ws_send({{"op", "allocate_relays"},
+                {"channels", json::array({{{"a", guest_session.user_id},
+                                           {"b", peer_session.user_id},
+                                           {"protocol", "udp"},
+                                           {"lifetime_sec", 30}}})}});
+  auto rejected = read_where(host,
+                             [](const json& msg)
+                             {
+                               return msg.value("op", "") == "error";
+                             });
+  CHECK(rejected["error"] == "bad_request");
 
   host.ws_send({{"op", "allocate_relays"},
                 {"channels", json::array({{{"a", host_session.user_id},
@@ -406,56 +426,6 @@ TEST_CASE("https then websocket then https")
   auto recreated = host.request("POST", "/api/v1/lobbies", json::object(), host_session.token);
   CHECK(recreated.status == 200);
 
-  Client queued_a = server.client();
-  Client queued_b = server.client();
-  const auto a = auth(queued_a, kGame, "secret", "qa");
-  const auto b = auth(queued_b, kGame, "secret", "qb");
-  auto ticket =
-      queued_a.request("POST", "/api/v1/matchmaking/tickets", {{"mode", "duel"}}, a.token);
-  REQUIRE(ticket.status == 200);
-  CHECK(ticket.body["status"] == "queued");
-  const auto ticket_id = ticket.body.at("ticket_id").get<std::string>();
-  std::string waited_status;
-  std::string waited_lobby;
-  std::string waited_error;
-  std::thread waiter(
-      [&]
-      {
-        Client polling = server.client();
-        auto waited =
-            polling.request("GET", "/api/v1/matchmaking/tickets/" + ticket_id + "?wait_ms=4000", {},
-                            a.token, false);
-        waited_error = waited.error;
-        if( waited.body.contains("status") )
-        {
-          waited_status = waited.body["status"].get<std::string>();
-        }
-        if( waited.body.contains("lobby_id") && waited.body["lobby_id"].is_string() )
-        {
-          waited_lobby = waited.body["lobby_id"].get<std::string>();
-        }
-      });
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
-  auto filled =
-      queued_b.request("POST", "/api/v1/matchmaking/tickets", {{"mode", "duel"}}, b.token);
-  waiter.join();
-  REQUIRE(filled.status == 200);
-  CHECK(filled.body["status"] == "match_ready");
-  CHECK(waited_error.empty());
-  CHECK(waited_status == "match_ready");
-  CHECK(waited_lobby == filled.body["lobby_id"].get<std::string>());
-  auto bad_mode =
-      queued_a.request("POST", "/api/v1/matchmaking/tickets", {{"mode", "nope"}}, a.token);
-  CHECK(bad_mode.status == 409);
-  CHECK(bad_mode.body["error"] == "already_in_lobby");
-
-  Client fresh = server.client();
-  const auto fresh_session = auth(fresh, kGame, "secret", "fresh");
-  auto unknown_mode =
-      fresh.request("POST", "/api/v1/matchmaking/tickets", {{"mode", "nope"}}, fresh_session.token);
-  CHECK(unknown_mode.status == 404);
-  CHECK(unknown_mode.body["error"] == "mode_not_configured");
-
   boost::asio::io_context stats_ioc;
   boost::asio::ip::tcp::socket stats(stats_ioc);
   stats.connect({boost::asio::ip::make_address("127.0.0.1"), server.app->stats_port()});
@@ -474,7 +444,6 @@ TEST_CASE("https then websocket then https")
   auto stats_json = json::parse(stats_body);
   CHECK(stats_json.contains("connections"));
   CHECK(stats_json.contains("lobbies"));
-  CHECK(stats_json.contains("queue_depth"));
   CHECK(stats_json.contains("channels"));
   CHECK(stats_json.contains("games"));
 }

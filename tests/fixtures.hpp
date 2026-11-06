@@ -26,7 +26,6 @@ inline GameRecord sample_game(std::string id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa
   game.allow_join_in_progress = false;
   game.limits.max_players_per_lobby = 4;
   game.limits.max_lobbies = 20;
-  game.modes.push_back(Mode{"duel", 2});
   return game;
 }
 

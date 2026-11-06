@@ -5,7 +5,6 @@
 #include "jwt.hpp"
 #include "lobby.hpp"
 #include "log.hpp"
-#include "queue.hpp"
 #include "relay.hpp"
 #include "store.hpp"
 #include "util.hpp"
@@ -199,11 +198,11 @@ struct App::State
   std::unique_ptr<Store> store;
   Catalog catalog;
   std::string boot_id = uuid_v4();
-  boost::asio::io_context ioc{1};
+  int workers = 1;
+  boost::asio::io_context ioc;
   Strand strand;
   std::unique_ptr<RelayService> relay;
   LobbyService lobbies;
-  QueueService queue;
   std::unordered_map<std::string, User> users;
   std::unordered_map<std::string, FailWindow> auth_fails;
   std::unordered_map<std::string, std::weak_ptr<WsSession>> sockets;
@@ -224,10 +223,10 @@ struct App::State
   std::uint16_t stats_port_ = 0;
   Clock::time_point last_prune = Clock::now();
 
-  explicit State(std::string path)
-      : database_path(std::move(path)), strand(boost::asio::make_strand(ioc)), https_acceptor(ioc),
-        stats_acceptor(ioc), ssl_ctx(ssl::context::tls_server), ticker(ioc),
-        work(ioc.get_executor())
+  explicit State(std::string path, int worker_count)
+      : database_path(std::move(path)), workers(std::max(1, worker_count)), ioc(workers),
+        strand(boost::asio::make_strand(ioc)), https_acceptor(ioc), stats_acceptor(ioc),
+        ssl_ctx(ssl::context::tls_server), ticker(ioc), work(ioc.get_executor())
   {
     relay = std::make_unique<RelayService>(ioc, strand);
   }
@@ -275,12 +274,6 @@ struct App::State
         [this](const std::string& lobby_id)
         {
           relay->release_lobby(lobby_id, Clock::now());
-          queue.on_lobby_destroyed(lobby_id);
-        });
-    queue.set_match_fn(
-        [this](const std::string& game_id, const std::vector<Actor>& actors, LobbyService::Time now)
-        {
-          return lobbies.create_match(game_id, actors, now);
         });
     relay->set_on_closed(
         [this](const RelayClosed& closed)
@@ -361,18 +354,15 @@ struct App::State
   json stats_json() const
   {
     int lobby_total = 0;
-    int queued = 0;
     json games = json::array();
     for( const auto& game : catalog.games() )
     {
       const int count = lobbies.lobby_count(game.id);
       lobby_total += count;
-      queued += queue.queued_count(game.id);
       games.push_back({{"id", game.id}, {"lobbies", count}});
     }
     return {{"connections", connections.load()},
             {"lobbies", lobby_total},
-            {"queue_depth", queued},
             {"channels", relay->channels()},
             {"forwarded_bytes", relay->forwarded_bytes()},
             {"drops", relay->drops()},
@@ -636,7 +626,6 @@ private:
       send(frame_error(json::object(), snapshot.error()), true);
       return;
     }
-    state_.queue.cancel_queued_user(user_id_);
     send(*snapshot, false);
     do_read();
   }
@@ -1294,11 +1283,6 @@ void App::State::handle_http(const http::request<http::string_body>& req, const 
     }
     if( method == http::verb::post && action == "join" )
     {
-      if( queue.has_open_ticket(actor.user_id) )
-      {
-        finish_error(Error{ErrorCode::AlreadyQueued, "already queued", std::nullopt});
-        return;
-      }
       std::optional<std::string> password;
       if( body.contains("password") && !body["password"].is_null() )
       {
@@ -1321,11 +1305,6 @@ void App::State::handle_http(const http::request<http::string_body>& req, const 
   }
   if( method == http::verb::post && target.path == "/api/v1/lobbies" )
   {
-    if( queue.has_open_ticket(actor.user_id) )
-    {
-      finish_error(Error{ErrorCode::AlreadyQueued, "already queued", std::nullopt});
-      return;
-    }
     auto created = lobbies.create(actor, now);
     if( !created )
     {
@@ -1335,106 +1314,6 @@ void App::State::handle_http(const http::request<http::string_body>& req, const 
     write_log(store.get(), LogLevel::Info, "lobby", "lobby created", actor.game_id);
     respond(HttpOut{200, *created, true});
     return;
-  }
-  constexpr std::string_view tickets = "/api/v1/matchmaking/tickets";
-  if( target.path == tickets && method == http::verb::post )
-  {
-    if( lobbies.user_in_lobby(actor.user_id) )
-    {
-      finish_error(Error{ErrorCode::AlreadyInLobby, "already in a lobby", std::nullopt});
-      return;
-    }
-    const auto* game = catalog.game(actor.game_id);
-    if( !game )
-    {
-      finish_error(Error{ErrorCode::UnknownGame, "unknown game", std::nullopt});
-      return;
-    }
-    auto ticket = queue.enqueue(actor, *game, body.value("mode", ""), now);
-    if( !ticket )
-    {
-      finish_error(ticket.error());
-      return;
-    }
-    if( ticket->value("status", "") == "match_ready" )
-    {
-      write_log(store.get(), LogLevel::Info, "queue", "match formed", actor.game_id);
-    }
-    respond(HttpOut{200, *ticket, true});
-    return;
-  }
-  if( target.path.starts_with(std::string(tickets) + "/") &&
-      target.path.size() > tickets.size() + 1 )
-  {
-    const auto ticket_id = url_decode(target.path.substr(tickets.size() + 1));
-    if( method == http::verb::delete_ )
-    {
-      auto cancelled = queue.cancel(actor, ticket_id, lobbies, now);
-      if( !cancelled )
-      {
-        finish_error(cancelled.error());
-        return;
-      }
-      respond(HttpOut{200, {{"ticket_id", ticket_id}, {"status", "cancelled"}}, true});
-      return;
-    }
-    if( method == http::verb::get )
-    {
-      auto current = queue.status(actor, ticket_id);
-      if( !current )
-      {
-        finish_error(current.error());
-        return;
-      }
-      int wait_ms = 0;
-      if( has_query(target.query, "wait_ms") )
-      {
-        try
-        {
-          wait_ms = std::stoi(query_value(target.query, "wait_ms"));
-        }
-        catch( ... )
-        {
-          finish_error(Error{ErrorCode::BadRequest, "bad wait_ms", std::nullopt});
-          return;
-        }
-      }
-      wait_ms = std::clamp(wait_ms, 0, catalog.system().ticket_wait_cap_ms);
-      if( wait_ms == 0 || current->value("status", "") != "queued" )
-      {
-        respond(HttpOut{200, *current, true});
-        return;
-      }
-      auto done = std::make_shared<std::atomic<bool>>(false);
-      auto timer = std::make_shared<boost::asio::steady_timer>(strand);
-      auto complete = [this, respond, done, timer, actor, ticket_id]
-      {
-        if( done->exchange(true) )
-        {
-          return;
-        }
-        timer->cancel();
-        auto latest = queue.status(actor, ticket_id);
-        if( !latest )
-        {
-          respond(HttpOut{http_status(latest.error().code), error_body(latest.error()), true});
-          return;
-        }
-        respond(HttpOut{200, *latest, true});
-      };
-      timer->expires_after(std::chrono::milliseconds(wait_ms));
-      timer->async_wait(boost::asio::bind_executor(strand,
-                                                   [complete](boost::system::error_code ec)
-                                                   {
-                                                     if( ec )
-                                                     {
-                                                       return;
-                                                     }
-                                                     complete();
-                                                   }));
-      queue.add_waiter(actor, ticket_id, complete);
-      return;
-    }
   }
   finish_error(Error{ErrorCode::NotFound, "not found", std::nullopt});
 }
@@ -1667,10 +1546,17 @@ void App::State::handle_ws_message(const std::string& user_id, const std::string
       return;
     }
     const auto& requested = message["channels"];
+    auto lobby_view = lobbies.get(actor.game_id, lobby_id);
+    if( !lobby_view )
+    {
+      fail(lobby_view.error());
+      return;
+    }
+    const int player_slots = std::max(1, lobby_view->value("slots", 1));
     const int game_count = game_channels[game->id];
     const int lobby_count = lobby_channels[lobby_id];
     if( game_count + static_cast<int>(requested.size()) > game->limits.max_concurrent_channels ||
-        lobby_count + static_cast<int>(requested.size()) > game->limits.max_channels_per_lobby )
+        lobby_count + static_cast<int>(requested.size()) > player_slots )
     {
       fail(Error{ErrorCode::Limit, "channel limit", std::nullopt});
       return;
@@ -1692,6 +1578,18 @@ void App::State::handle_ws_message(const std::string& user_id, const std::string
       const auto user_b = channel.value("b", "");
       const auto protocol = channel.value("protocol", "udp");
       const int lifetime = channel.value("lifetime_sec", 0);
+      const bool host_on_a = user_a == actor.user_id;
+      const bool host_on_b = user_b == actor.user_id;
+      if( host_on_a == host_on_b )
+      {
+        fail(Error{ErrorCode::BadRequest, "a channel connects the host to one other member",
+                   std::nullopt});
+        for( const auto& id : created )
+        {
+          relay->release(id, now);
+        }
+        return;
+      }
       if( !lobbies.connected_member(lobby_id, user_a) ||
           !lobbies.connected_member(lobby_id, user_b) )
       {
@@ -1791,10 +1689,19 @@ tcp::endpoint endpoint_from(const std::string& text)
   return {boost::asio::ip::make_address(parsed->first), parsed->second};
 }
 
+int configured_workers(const std::string& path)
+{
+  auto store = open_sqlite_store(path);
+  store->migrate();
+  return SystemConfig::from_map(store->load_config()).max_threads;
+}
+
 } // namespace
 
-App::App(std::string database_path) : state_(std::make_unique<State>(std::move(database_path)))
+App::App(std::string database_path)
 {
+  const int workers = configured_workers(database_path);
+  state_ = std::make_unique<State>(std::move(database_path), workers);
 }
 
 App::~App()
@@ -1848,13 +1755,7 @@ void App::start()
   state_->do_https_accept();
   state_->do_stats_accept();
   state_->schedule_tick();
-  int threads =
-      cfg.threads <= 0 ? static_cast<int>(std::thread::hardware_concurrency()) : cfg.threads;
-  if( threads < 1 )
-  {
-    threads = 1;
-  }
-  for( int i = 0; i < threads; ++i )
+  for( int i = 0; i < state_->workers; ++i )
   {
     state_->threads.emplace_back(
         [this]

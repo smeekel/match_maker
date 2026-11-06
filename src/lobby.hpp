@@ -59,8 +59,6 @@ public:
   }
 
   Result<nlohmann::json> create(const Actor& actor, Time now);
-  Result<std::string> create_match(const std::string& game_id, const std::vector<Actor>& users,
-                                   Time now);
   Result<nlohmann::json> begin_join(const Actor& actor, const std::string& lobby_id,
                                     const std::optional<std::string>& password, Time now);
   Result<nlohmann::json> complete_connect(const std::string& user_id, const std::string& lobby_id,
@@ -106,7 +104,6 @@ private:
     {
       None,
       Host,
-      Match,
       Join
     } hold = Hold::None;
     Time deadline{};

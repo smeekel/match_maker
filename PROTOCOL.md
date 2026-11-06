@@ -6,9 +6,9 @@ A client uses HTTPS until it enters a lobby, holds one WebSocket for the whole l
 
 ## Startup
 
-The only value outside the database is the SQLite path: `--database <path>` or `MATCHMAKER_DATABASE`. The process applies migrations, loads config and games, then binds the address in `listen`. Certificate bytes stay in the PEM files named by `tls_cert` and `tls_key`. `SIGHUP` (and `SIGBREAK` on Windows) reloads config and games. Listen address and TLS files stay as they were at startup. Existing relay channels keep the lifetime they were granted. `SIGTERM` and `SIGINT` close lobby sockets and exit.
+The only value outside the database is the SQLite path: `--database <path>` or `MATCHMAKER_DATABASE`. The process applies migrations, loads config and games, then binds the address in `listen`. Certificate bytes stay in the PEM files named by `tls_cert` and `tls_key`. `max_threads` (default 1) is how many threads run the process; a value below 1 runs as 1. `SIGHUP` (and `SIGBREAK` on Windows) reloads config and games. Listen address, TLS files, and the worker count stay as they were at startup. Existing relay channels keep the lifetime they were granted. `SIGTERM` and `SIGINT` close lobby sockets and exit.
 
-Restarting the process drops sessions, tickets, lobbies, and forwarders. A JWT from a previous process is rejected because `boot_id` changes.
+Restarting the process drops sessions, lobbies, and forwarders. A JWT from a previous process is rejected because `boot_id` changes.
 
 ## HTTPS
 
@@ -18,7 +18,7 @@ JSON in, JSON out. Authenticated routes use `Authorization: Bearer <jwt>`. A tok
 {"error":"<code>","message":"..."}
 ```
 
-Status codes: 400, 401, 403, 404, 409, 413, 429. Codes include `unauthorized`, `unknown_game`, `not_host`, `not_member`, `lobby_not_open`, `late_join_disabled`, `full`, `bad_password`, `invalid_code`, `code_taken`, `limit`, `lifetime_exceeds_limit` (with `max_lifetime_sec`), `too_large`, `unknown_user`, `mode_not_configured`, `already_in_lobby`, `already_queued`, `not_found`.
+Status codes: 400, 401, 403, 404, 409, 413, 429. Codes include `unauthorized`, `unknown_game`, `not_host`, `not_member`, `lobby_not_open`, `late_join_disabled`, `full`, `bad_password`, `invalid_code`, `code_taken`, `limit`, `lifetime_exceeds_limit` (with `max_lifetime_sec`), `too_large`, `unknown_user`, `already_in_lobby`, `not_found`.
 
 When `Accept-Encoding` includes `gzip` and the body is at least `http_gzip_min_bytes`, the response is gzip and sets `Content-Encoding: gzip` and `Vary: Accept-Encoding`.
 
@@ -58,7 +58,7 @@ JWT is HS256. Claims: `sub` (user id), `game_id`, `iat`, `exp`, `jti`, `boot_id`
 
 ### Lobbies
 
-`GET /api/v1/lobbies?limit&cursor` lists lobbies a voluntary player may join: phase `open`, or `in_progress` when the game and the host both allow late join. Default limit 50, max 200. Each entry has `lobby_id`, `host_id`, `phase`, `slots`, `member_count`, `locked`, `allow_late_join`, `short_code` (`null` when unset). Metadata is omitted.
+`GET /api/v1/lobbies?limit&cursor` lists lobbies a voluntary player may join: phase `open`, or `in_progress` when the game and the host both allow late join. Default limit 50, max 200. Each entry has `lobby_id`, `host_id`, `phase`, `slots`, `member_count`, `locked`, `allow_late_join`, `short_code` (`null` when unset), and `metadata`. Games advertise modes and other rules through that object; the service stores it and returns it, and does not interpret the keys.
 
 `GET /api/v1/lobbies/{id}?client_ts=` returns `lobby` (including metadata), `server_ts`, `client_ts` when supplied, and `host_control_rtt_ms` when the host socket answers a probe. This does not join.
 
@@ -66,31 +66,21 @@ JWT is HS256. Claims: `sub` (user id), `game_id`, `iat`, `exp`, `jti`, `boot_id`
 
 Estimated relay RTT is the client's own HTTPS round trip plus `host_control_rtt_ms`.
 
-`POST /api/v1/lobbies` creates a closed lobby and reserves the caller as host. Slots start at the game player cap. The caller then opens the lobby WebSocket. A user who already has a lobby gets `already_in_lobby`. A user with an open ticket gets `already_queued`.
+`POST /api/v1/lobbies` creates a closed lobby and reserves the caller as host. Slots start at the game player cap. The caller then opens the lobby WebSocket. A user who already has a lobby gets `already_in_lobby`.
 
 `POST /api/v1/lobbies/{id}/join` with `{"password":"..."}` checks the lock and holds a free slot for `join_hold_sec` (default 10). The WebSocket upgrade completes the hold. A voluntary upgrade without a hold is rejected.
 
-### Matchmaking
-
-`POST /api/v1/matchmaking/tickets` with `{"mode":"<name>"}` creates one FIFO ticket. Errors: `already_in_lobby`, `already_queued`, `mode_not_configured`.
-
-`GET /api/v1/matchmaking/tickets/{id}?wait_ms=` returns `queued` plus `position`, or `match_ready` plus `lobby_id`, or `cancelled`. `wait_ms` is capped by `ticket_wait_cap_ms` (default 25000). The wait is a timer; it does not block the control strand.
-
-`DELETE /api/v1/matchmaking/tickets/{id}` drops the ticket.
-
-When a mode fills, the server creates a closed unlisted lobby, admits those users, makes the earliest ticket the host, and completes waiting GETs with `match_ready`. Admission lasts `admit_sec` (default 60). If the host's WebSocket is not up by then, the lobby is destroyed and later polls return `cancelled`. Opening the lobby socket cancels a leftover queued ticket for that user. A ready ticket is an admission, not a leftover queue entry.
-
 ## One lobby
 
-A user id is in at most one lobby. The reservation starts at create, at match formation, or at a successful HTTPS join. It ends when they leave, the lobby ends, the join hold expires, or admission expires before they connect. A second auth is a different user. Every lobby and ticket is scoped to the session's `game_id`.
+A user id is in at most one lobby. The reservation starts at create or at a successful HTTPS join. It ends when they leave, the lobby ends, the join hold expires, or the host admission expires before they connect. A second auth is a different user. Every lobby is scoped to the session's `game_id`.
 
 ## Join rules
 
-Phase is `closed`, `open`, or `in_progress`. The host sets it. Allocating relays does not change the phase. Create and matchmaking start `closed`.
+Phase is `closed`, `open`, or `in_progress`. The host sets it. Allocating relays does not change the phase. Create starts `closed`.
 
 The effective slot cap is the minimum of the host's number, the game `max_players_per_lobby`, and the system `max_players_per_lobby`. The host cannot set slots below the current members plus outstanding holds, or above the game cap.
 
-A voluntary join of an `open` lobby needs a free slot and a passing lock check. A voluntary join of an `in_progress` lobby also needs the game `allow_join_in_progress` and the host `allow_late_join`. A `closed` lobby rejects voluntary joins. The host reservation and a match admission skip the phase and lock checks and still consume a slot.
+A voluntary join of an `open` lobby needs a free slot and a passing lock check. A voluntary join of an `in_progress` lobby also needs the game `allow_join_in_progress` and the host `allow_late_join`. A `closed` lobby rejects voluntary joins. The host reservation skips the phase and lock checks and still consumes a slot.
 
 Lock is one in-memory password. Null or empty clears it. The password is never listed, snapshotted, or logged. A wrong or missing password on a locked lobby is `bad_password`.
 
@@ -98,7 +88,7 @@ Short code is optional, 1 to 16 characters from `A-Za-z0-9`, unique among live l
 
 ## Lobby WebSocket
 
-`GET /ws/v1/lobbies/{id}` with the bearer header, upgraded to WebSocket. The upgrade completes a host reservation, a match admission, or an HTTPS join hold.
+`GET /ws/v1/lobbies/{id}` with the bearer header, upgraded to WebSocket. The upgrade completes a host reservation or an HTTPS join hold.
 
 Text frames are one JSON object. When the client offers `permessage-deflate`, the server accepts it with no context takeover, compression level `websocket_deflate_level` (default 3), and `server_max_window_bits` (default 12).
 
@@ -125,7 +115,7 @@ Requests may include `id`. `ok` and `error` echo it.
 | `set_late_join` | host | `allowed` |
 | `set_password` | host | `password` or null |
 | `set_short_code` | host | `code` or null |
-| `allocate_relays` | host | `channels`: `{a, b, protocol, lifetime_sec}` |
+| `allocate_relays` | host | `channels`: `{a, b, protocol, lifetime_sec}`. One endpoint is the host and the other is a different member. |
 | `release_relays` | host | optional `ids`; omitted releases every channel in the lobby |
 | `close_lobby` | host | |
 | `leave` | member | |
@@ -146,7 +136,7 @@ A full outbound queue disconnects that client.
 
 ## Relay
 
-The host allocates bidirectional channels. A requested lifetime above the minimum of the game cap and the system cap fails with `lifetime_exceeds_limit` and `max_lifetime_sec`. Idle timeout is the minimum of the game and system values. One channel uses two ports. Bind failure rolls back. The forward path does not write SQLite.
+The host allocates bidirectional channels. Every channel connects the host to one other connected member, so players who are not the host reach each other through the host. A lobby can hold at most as many channels as it has player slots. A requested lifetime above the minimum of the game cap and the system cap fails with `lifetime_exceeds_limit` and `max_lifetime_sec`. Idle timeout is the minimum of the game and system values. One channel uses two ports. Bind failure rolls back. The forward path does not write SQLite.
 
 UDP: the first datagram is exactly the 16-byte token and pins the source. Later datagrams from that source are forwarded verbatim. A later datagram that is only the token rebinds the pin and is not forwarded. Datagrams before the peer has pinned, or larger than `max_udp_packet_bytes`, are dropped.
 
@@ -159,9 +149,9 @@ TCP is used only when system `relay_tcp_enabled` and the game `allow_tcp` are bo
 `stats_listen` is a localhost plaintext port. A connection receives one JSON document and the server closes:
 
 ```json
-{"connections":0,"lobbies":0,"queue_depth":0,"channels":0,"forwarded_bytes":0,"drops":0,"games":[{"id":"...","lobbies":0}]}
+{"connections":0,"lobbies":0,"channels":0,"forwarded_bytes":0,"drops":0,"games":[{"id":"...","lobbies":0}]}
 ```
 
 ## What is stored
 
-SQLite holds config, regions, games, modes, and operational logs. Sessions, tickets, lobbies, and forwarders are memory only. Logs record startup, shutdown, config reload, auth failure (game id only), lobby create and close, match formed, relay allocate and release, and errors. Chat, ready, custom, alias, and forwarded packets are not logged.
+SQLite holds config, regions, games, and operational logs. Sessions, lobbies, and forwarders are memory only. Logs record startup, shutdown, config reload, auth failure (game id only), lobby create and close, relay allocate and release, and errors. Chat, ready, custom, alias, and forwarded packets are not logged.

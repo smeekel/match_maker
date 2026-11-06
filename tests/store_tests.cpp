@@ -21,6 +21,8 @@ TEST_CASE("sqlite store migrates config, games, and logs")
     const auto config = store->load_config();
     CHECK(config.at("listen") == "0.0.0.0:443");
     CHECK(config.at("jwt_secret") == "change-me");
+    CHECK(config.at("max_threads") == "1");
+    CHECK(config.find("threads") == config.end());
     CHECK(store->load_games().empty());
     CHECK(store->load_regions().size() == 1);
 
@@ -33,9 +35,6 @@ TEST_CASE("sqlite store migrates config, games, and logs")
     CHECK(games[0].name == "Renamed");
     CHECK(games[0].token_hash == sha256_hex("secret"));
     CHECK(games[0].token_hash != "secret");
-    CHECK(games[0].modes.size() == 1);
-    CHECK(games[0].modes[0].name == "duel");
-    CHECK(games[0].modes[0].players == 2);
 
     write_log(store.get(), LogLevel::Info, "test", "survives reopen", game.id);
   }

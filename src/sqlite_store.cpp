@@ -44,7 +44,6 @@ Limits parse_limits(const std::string& text)
   set_int("max_players_per_lobby", limits.max_players_per_lobby);
   set_int("max_password_length", limits.max_password_length);
   set_int("max_concurrent_channels", limits.max_concurrent_channels);
-  set_int("max_channels_per_lobby", limits.max_channels_per_lobby);
   set_int("max_channel_lifetime_sec", limits.max_channel_lifetime_sec);
   set_int("max_idle_sec", limits.max_idle_sec);
   set_int("max_lobbies", limits.max_lobbies);
@@ -64,7 +63,6 @@ std::string limits_json(const Limits& limits)
   nlohmann::json json = {{"max_players_per_lobby", limits.max_players_per_lobby},
                          {"max_password_length", limits.max_password_length},
                          {"max_concurrent_channels", limits.max_concurrent_channels},
-                         {"max_channels_per_lobby", limits.max_channels_per_lobby},
                          {"max_channel_lifetime_sec", limits.max_channel_lifetime_sec},
                          {"max_idle_sec", limits.max_idle_sec},
                          {"allow_tcp", limits.allow_tcp},
@@ -217,28 +215,6 @@ public:
       out.push_back(std::move(game));
     }
     sqlite3_finalize(stmt);
-    for( auto& game : out )
-    {
-      sqlite3_stmt* modes = nullptr;
-      if( sqlite3_prepare_v2(db_,
-                             "SELECT name, players FROM game_modes WHERE game_id=? ORDER BY name",
-                             -1, &modes, nullptr) != SQLITE_OK )
-      {
-        fail_sql(db_, "modes");
-      }
-      sqlite3_bind_text(modes, 1, game.id.c_str(), -1, SQLITE_TRANSIENT);
-      while( sqlite3_step(modes) == SQLITE_ROW )
-      {
-        Mode mode;
-        mode.name = col_text(modes, 0);
-        mode.players = sqlite3_column_int(modes, 1);
-        if( mode.players >= 1 )
-        {
-          game.modes.push_back(std::move(mode));
-        }
-      }
-      sqlite3_finalize(modes);
-    }
     return out;
   }
 
@@ -279,29 +255,6 @@ public:
         fail_sql(db_, "upsert game step");
       }
       sqlite3_finalize(stmt);
-      bind_exec("DELETE FROM game_modes WHERE game_id=?", game.id);
-      for( const auto& mode : game.modes )
-      {
-        if( mode.name.empty() || mode.players < 1 )
-        {
-          throw std::runtime_error("invalid mode");
-        }
-        sqlite3_stmt* ms = nullptr;
-        if( sqlite3_prepare_v2(db_, "INSERT INTO game_modes(game_id, name, players) VALUES(?,?,?)",
-                               -1, &ms, nullptr) != SQLITE_OK )
-        {
-          fail_sql(db_, "insert mode");
-        }
-        sqlite3_bind_text(ms, 1, game.id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(ms, 2, mode.name.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(ms, 3, mode.players);
-        if( sqlite3_step(ms) != SQLITE_DONE )
-        {
-          sqlite3_finalize(ms);
-          fail_sql(db_, "insert mode step");
-        }
-        sqlite3_finalize(ms);
-      }
       exec("COMMIT");
     }
     catch( ... )

@@ -24,9 +24,7 @@ enum class ErrorCode
   LifetimeExceedsLimit,
   TooLarge,
   UnknownUser,
-  ModeNotConfigured,
   AlreadyInLobby,
-  AlreadyQueued,
   NotFound,
   Internal
 };

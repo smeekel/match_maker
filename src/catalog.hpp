@@ -22,7 +22,7 @@ struct SystemConfig
   int join_hold_sec = 10;
   int host_heartbeat_interval_sec = 2;
   int host_heartbeat_misses = 3;
-  int threads = 0;
+  int max_threads = 1;
   std::string stats_listen = "127.0.0.1:7711";
   std::string tls_cert;
   std::string tls_key;
@@ -50,7 +50,6 @@ struct SystemConfig
   bool relay_tcp_enabled = false;
   int auth_fail_limit = 20;
   int auth_fail_window_sec = 60;
-  int ticket_wait_cap_ms = 25000;
   int probe_timeout_ms = 500;
 
   static SystemConfig from_map(const std::map<std::string, std::string>& values);

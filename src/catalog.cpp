@@ -70,7 +70,7 @@ SystemConfig SystemConfig::from_map(const std::map<std::string, std::string>& va
   cfg.host_heartbeat_interval_sec =
       parse_int(values, "host_heartbeat_interval_sec", cfg.host_heartbeat_interval_sec);
   cfg.host_heartbeat_misses = parse_int(values, "host_heartbeat_misses", cfg.host_heartbeat_misses);
-  cfg.threads = parse_int(values, "threads", cfg.threads);
+  cfg.max_threads = std::max(1, parse_int(values, "max_threads", cfg.max_threads));
   cfg.stats_listen = parse_string(values, "stats_listen", cfg.stats_listen);
   cfg.tls_cert = parse_string(values, "tls_cert", cfg.tls_cert);
   cfg.tls_key = parse_string(values, "tls_key", cfg.tls_key);
@@ -105,7 +105,6 @@ SystemConfig SystemConfig::from_map(const std::map<std::string, std::string>& va
   cfg.relay_tcp_enabled = parse_bool(values, "relay_tcp_enabled", cfg.relay_tcp_enabled);
   cfg.auth_fail_limit = parse_int(values, "auth_fail_limit", cfg.auth_fail_limit);
   cfg.auth_fail_window_sec = parse_int(values, "auth_fail_window_sec", cfg.auth_fail_window_sec);
-  cfg.ticket_wait_cap_ms = parse_int(values, "ticket_wait_cap_ms", cfg.ticket_wait_cap_ms);
   cfg.probe_timeout_ms = parse_int(values, "probe_timeout_ms", cfg.probe_timeout_ms);
   return cfg;
 }

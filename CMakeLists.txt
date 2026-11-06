@@ -90,7 +90,6 @@ set(MM_SOURCES
   src/sqlite_store.cpp
   src/catalog.cpp
   src/lobby.cpp
-  src/queue.cpp
   src/relay.cpp
   src/log.cpp
   src/net.cpp)
@@ -135,7 +134,6 @@ add_executable(matchmaker_tests
   tests/cert.cpp
   tests/store_tests.cpp
   tests/lobby_tests.cpp
-  tests/queue_tests.cpp
   tests/relay_tests.cpp
   tests/integration_tests.cpp)
 target_link_libraries(matchmaker_tests PRIVATE matchmaker_core matchmaker_client doctest::doctest)

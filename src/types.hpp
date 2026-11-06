@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace matchmaker
 {
@@ -12,7 +11,6 @@ struct Limits
   int max_players_per_lobby = 16;
   int max_password_length = 64;
   int max_concurrent_channels = 256;
-  int max_channels_per_lobby = 32;
   int max_channel_lifetime_sec = 3600;
   int max_idle_sec = 60;
   bool allow_tcp = false;
@@ -23,12 +21,6 @@ struct Limits
   int max_alias_bytes = 32;
 };
 
-struct Mode
-{
-  std::string name;
-  int players = 0;
-};
-
 struct GameRecord
 {
   std::string id;
@@ -37,7 +29,6 @@ struct GameRecord
   bool promote_host_on_leave = false;
   bool allow_join_in_progress = false;
   Limits limits;
-  std::vector<Mode> modes;
   std::int64_t created_at_ms = 0;
 };
 
