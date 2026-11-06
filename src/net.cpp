@@ -514,6 +514,10 @@ public:
 
   void run()
   {
+    // The HTTP read that accepted this upgrade armed a 30s deadline on the
+    // socket. That deadline is not cleared when the read completes, so the
+    // next websocket read or write after 30s aborts the connection.
+    beast::get_lowest_layer(ws_).expires_never();
     const auto& cfg = state_.catalog.system();
     websocket::stream_base::timeout timeout;
     timeout.handshake_timeout = std::chrono::seconds(10);
