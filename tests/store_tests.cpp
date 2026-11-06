@@ -11,7 +11,8 @@
 using namespace matchmaker;
 using namespace matchmaker::test;
 
-TEST_CASE("sqlite store migrates config, games, and logs") {
+TEST_CASE("sqlite store migrates config, games, and logs")
+{
   const auto dir = make_temp_dir();
   const auto path = (dir / "store.sqlite").string();
   {
@@ -44,8 +45,10 @@ TEST_CASE("sqlite store migrates config, games, and logs") {
     const auto logs = store->recent_logs(10);
     REQUIRE_FALSE(logs.empty());
     bool found = false;
-    for (const auto& row : logs) {
-      if (row.message == "survives reopen") {
+    for( const auto& row : logs )
+    {
+      if( row.message == "survives reopen" )
+      {
         found = true;
         CHECK(row.category == "test");
         CHECK(row.game_id == sample_game().id);

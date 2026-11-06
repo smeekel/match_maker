@@ -12,9 +12,11 @@
 #include <string>
 #include <unordered_map>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-struct RelayConfig {
+struct RelayConfig
+{
   std::string bind_host = "0.0.0.0";
   int port_start = 30000;
   int port_end = 39999;
@@ -23,7 +25,8 @@ struct RelayConfig {
   bool tcp_enabled = false;
 };
 
-struct ChannelRequest {
+struct ChannelRequest
+{
   std::string lobby_id;
   std::string game_id;
   std::string user_a;
@@ -36,14 +39,16 @@ struct ChannelRequest {
   std::string public_host = "127.0.0.1";
 };
 
-struct SideInfo {
+struct SideInfo
+{
   std::string user_id;
   std::string host;
   int port = 0;
   std::string token_hex;
 };
 
-struct ChannelInfo {
+struct ChannelInfo
+{
   std::string id;
   std::string lobby_id;
   std::string protocol;
@@ -52,7 +57,8 @@ struct ChannelInfo {
   SideInfo b;
 };
 
-struct RelayClosed {
+struct RelayClosed
+{
   std::string id;
   std::string lobby_id;
   std::string user_a;
@@ -60,15 +66,19 @@ struct RelayClosed {
   std::string reason;
 };
 
-class RelayService {
- public:
+class RelayService
+{
+public:
   using Clock = std::chrono::steady_clock;
   using Time = Clock::time_point;
 
   using Strand = boost::asio::strand<boost::asio::io_context::executor_type>;
 
   RelayService(boost::asio::io_context& ioc, Strand strand);
-  Strand strand() const { return strand_; }
+  Strand strand() const
+  {
+    return strand_;
+  }
   void configure(RelayConfig config);
   Result<ChannelInfo> allocate(const ChannelRequest& request, Time now);
   Status release(const std::string& id, Time now);
@@ -79,11 +89,12 @@ class RelayService {
   std::uint64_t forwarded_bytes() const;
   std::uint64_t drops() const;
 
- private:
+private:
   struct Channel;
   void arm_udp(const std::shared_ptr<Channel>& channel, int side);
-  void on_udp(const std::shared_ptr<Channel>& channel, int side, const boost::asio::ip::udp::endpoint& from,
-              const std::uint8_t* data, std::size_t n, Time now);
+  void on_udp(const std::shared_ptr<Channel>& channel, int side,
+              const boost::asio::ip::udp::endpoint& from, const std::uint8_t* data, std::size_t n,
+              Time now);
   void begin_tcp(const std::shared_ptr<Channel>& channel, int side);
   void finalize_close(const std::string& id, const std::string& reason);
   void request_close(const std::shared_ptr<Channel>& channel, std::string reason);
@@ -102,4 +113,4 @@ class RelayService {
 
 Result<int> check_lifetime(int requested, int game_max, int system_max);
 
-}  // namespace matchmaker
+} // namespace matchmaker

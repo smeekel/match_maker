@@ -7,16 +7,17 @@
 #include <string>
 #include <utility>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-template <class T>
-using Result = std::expected<T, Error>;
+template <class T> using Result = std::expected<T, Error>;
 
 using Status = Result<bool>;
 
 inline std::unexpected<Error> Err(ErrorCode code, std::string message,
-                                  std::optional<std::int64_t> max_lifetime_sec = std::nullopt) {
+                                  std::optional<std::int64_t> max_lifetime_sec = std::nullopt)
+{
   return std::unexpected(Error{code, std::move(message), max_lifetime_sec});
 }
 
-}  // namespace matchmaker
+} // namespace matchmaker

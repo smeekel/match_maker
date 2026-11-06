@@ -11,39 +11,55 @@ using namespace matchmaker;
 using namespace matchmaker::test;
 using Clock = LobbyService::Clock;
 
-namespace {
+namespace
+{
 
-struct QueueWorld {
+struct QueueWorld
+{
   std::unordered_map<std::string, GameRecord> games;
   LobbyService lobbies;
   QueueService queue;
 
-  QueueWorld() {
+  QueueWorld()
+  {
     auto game = sample_game();
     games.emplace(game.id, game);
-    lobbies.set_rules([this](const std::string& id) -> const GameRecord* {
-      const auto it = games.find(id);
-      return it == games.end() ? nullptr : &it->second;
-    });
+    lobbies.set_rules(
+        [this](const std::string& id) -> const GameRecord*
+        {
+          const auto it = games.find(id);
+          return it == games.end() ? nullptr : &it->second;
+        });
     lobbies.set_system_player_cap(64);
-    queue.set_match_fn([this](const std::string& game_id, const std::vector<Actor>& users, LobbyService::Time now) {
-      return lobbies.create_match(game_id, users, now);
-    });
-    lobbies.set_on_destroyed([this](const std::string& id) { queue.on_lobby_destroyed(id); });
+    queue.set_match_fn(
+        [this](const std::string& game_id, const std::vector<Actor>& users, LobbyService::Time now)
+        {
+          return lobbies.create_match(game_id, users, now);
+        });
+    lobbies.set_on_destroyed(
+        [this](const std::string& id)
+        {
+          queue.on_lobby_destroyed(id);
+        });
   }
 
-  Actor user(std::string id) const { return Actor{std::move(id), sample_game().id, "q", "ext"}; }
+  Actor user(std::string id) const
+  {
+    return Actor{std::move(id), sample_game().id, "q", "ext"};
+  }
 };
 
-}  // namespace
+} // namespace
 
-TEST_CASE("fill-to-n match, unknown mode, and admission expiry") {
+TEST_CASE("fill-to-n match, unknown mode, and admission expiry")
+{
   QueueWorld world;
   Timing timing;
   timing.admit = std::chrono::seconds(1);
   world.lobbies.set_timing(timing);
   const auto now = Clock::now();
-  auto unknown = world.queue.enqueue(world.user("a"), world.games.at(sample_game().id), "missing", now);
+  auto unknown =
+      world.queue.enqueue(world.user("a"), world.games.at(sample_game().id), "missing", now);
   REQUIRE_FALSE(unknown);
   CHECK(unknown.error().code == ErrorCode::ModeNotConfigured);
 
@@ -51,7 +67,8 @@ TEST_CASE("fill-to-n match, unknown mode, and admission expiry") {
   REQUIRE(first);
   CHECK((*first)["status"] == "queued");
   CHECK((*first)["position"] == 1);
-  auto duplicate = world.queue.enqueue(world.user("a"), world.games.at(sample_game().id), "duel", now);
+  auto duplicate =
+      world.queue.enqueue(world.user("a"), world.games.at(sample_game().id), "duel", now);
   REQUIRE_FALSE(duplicate);
   CHECK(duplicate.error().code == ErrorCode::AlreadyQueued);
 
@@ -73,12 +90,14 @@ TEST_CASE("fill-to-n match, unknown mode, and admission expiry") {
   CHECK((*cancelled)["status"] == "cancelled");
 }
 
-TEST_CASE("cancelling a queued ticket frees the user") {
+TEST_CASE("cancelling a queued ticket frees the user")
+{
   QueueWorld world;
   const auto now = Clock::now();
   auto ticket = world.queue.enqueue(world.user("a"), world.games.at(sample_game().id), "duel", now);
   REQUIRE(ticket);
-  REQUIRE(world.queue.cancel(world.user("a"), (*ticket)["ticket_id"].get<std::string>(), world.lobbies, now));
+  REQUIRE(world.queue.cancel(world.user("a"), (*ticket)["ticket_id"].get<std::string>(),
+                             world.lobbies, now));
   CHECK_FALSE(world.queue.has_open_ticket("a"));
   auto again = world.queue.enqueue(world.user("a"), world.games.at(sample_game().id), "duel", now);
   REQUIRE(again);

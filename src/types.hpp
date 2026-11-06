@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 
-namespace matchmaker {
+namespace matchmaker
+{
 
-struct Limits {
+struct Limits
+{
   int max_players_per_lobby = 16;
   int max_password_length = 64;
   int max_concurrent_channels = 256;
@@ -21,12 +23,14 @@ struct Limits {
   int max_alias_bytes = 32;
 };
 
-struct Mode {
+struct Mode
+{
   std::string name;
   int players = 0;
 };
 
-struct GameRecord {
+struct GameRecord
+{
   std::string id;
   std::string name;
   std::string token_hash;
@@ -37,13 +41,15 @@ struct GameRecord {
   std::int64_t created_at_ms = 0;
 };
 
-struct Region {
+struct Region
+{
   std::string id;
   std::string public_url;
   int sort_order = 0;
 };
 
-struct LogRecord {
+struct LogRecord
+{
   std::string id;
   std::int64_t ts_ms = 0;
   std::string level;
@@ -53,11 +59,12 @@ struct LogRecord {
   std::string detail_json;
 };
 
-struct Actor {
+struct Actor
+{
   std::string user_id;
   std::string game_id;
   std::string alias;
   std::string external_id;
 };
 
-}  // namespace matchmaker
+} // namespace matchmaker
