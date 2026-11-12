@@ -1,18 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 project(matchmaker LANGUAGES C CXX)
 
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
-
-if(MSVC)
-  # This compiler's C++26 mode is /std:c++latest; it has no /std:c++26 switch.
-  set(CMAKE_CXX_STANDARD 23)
-  set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "/std:c++latest")
-  set(CMAKE_CXX23_EXTENSION_COMPILE_OPTION "/std:c++latest")
-else()
-  set(CMAKE_CXX_STANDARD 26)
-endif()
 
 set(MM_DEPS "${CMAKE_BINARY_DIR}/deps")
 file(MAKE_DIRECTORY "${MM_DEPS}")
@@ -65,11 +57,14 @@ FetchContent_Declare(zlib
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(nlohmann_json doctest zlib)
 
-set(OPENSSL_ROOT_DIR "C:/Program Files/OpenSSL-Win64" CACHE PATH "OpenSSL root")
-set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
-set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libssl.lib")
-set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libcrypto.lib")
+if(WIN32)
+  set(OPENSSL_ROOT_DIR "C:/Program Files/OpenSSL-Win64" CACHE PATH "OpenSSL root")
+  set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
+  set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libssl.lib")
+  set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libcrypto.lib")
+endif()
 find_package(OpenSSL REQUIRED)
+find_package(Threads REQUIRED)
 
 set(NGTCP2_VERSION 1.26.0)
 set(NGTCP2_DIR "${MM_DEPS}/ngtcp2-${NGTCP2_VERSION}")
@@ -94,9 +89,21 @@ endif()
 # Both projects define a top-level `check` target, so they cannot be added as
 # subdirectories of one Ninja build. Their library sources are compiled here.
 set(MM_QUIC_GEN "${CMAKE_BINARY_DIR}/quic")
-set(ssize_t ptrdiff_t)
-set(HAVE_DECL_BE64TOH 0)
-set(HAVE_DECL_BSWAP_64 0)
+if(WIN32)
+  # Windows has no ssize_t, and the POSIX byte-swap helpers are absent.
+  set(ssize_t ptrdiff_t)
+  set(HAVE_DECL_BE64TOH 0)
+  set(HAVE_DECL_BSWAP_64 0)
+else()
+  unset(ssize_t)
+  set(HAVE_ARPA_INET_H 1)
+  set(HAVE_NETINET_IN_H 1)
+  set(HAVE_UNISTD_H 1)
+  set(HAVE_ENDIAN_H 1)
+  set(HAVE_BYTESWAP_H 1)
+  set(HAVE_DECL_BE64TOH 1)
+  set(HAVE_DECL_BSWAP_64 1)
+endif()
 configure_file("${NGTCP2_DIR}/cmakeconfig.h.in" "${MM_QUIC_GEN}/ngtcp2/config.h")
 configure_file("${NGHTTP3_DIR}/cmakeconfig.h.in" "${MM_QUIC_GEN}/nghttp3/config.h")
 set(PACKAGE_VERSION "${NGTCP2_VERSION}")
@@ -122,7 +129,10 @@ target_include_directories(ngtcp2
     "${NGTCP2_DIR}/lib"
     "${NGTCP2_DIR}/crypto")
 target_compile_definitions(ngtcp2 PUBLIC NGTCP2_STATICLIB PRIVATE HAVE_CONFIG_H BUILDING_NGTCP2)
-target_link_libraries(ngtcp2 PUBLIC OpenSSL::SSL OpenSSL::Crypto ws2_32)
+target_link_libraries(ngtcp2 PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+if(WIN32)
+  target_link_libraries(ngtcp2 PUBLIC ws2_32)
+endif()
 
 file(GLOB NGHTTP3_SOURCES "${NGHTTP3_DIR}/lib/*.c")
 add_library(nghttp3 STATIC ${NGHTTP3_SOURCES} "${NGHTTP3_DIR}/lib/sfparse/sfparse.c")
@@ -134,7 +144,10 @@ target_include_directories(nghttp3
     "${MM_QUIC_GEN}/nghttp3"
     "${NGHTTP3_DIR}/lib")
 target_compile_definitions(nghttp3 PUBLIC NGHTTP3_STATICLIB PRIVATE HAVE_CONFIG_H BUILDING_NGHTTP3)
-set_target_properties(ngtcp2 nghttp3 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+set_target_properties(ngtcp2 nghttp3 PROPERTIES
+  C_STANDARD 11
+  C_STANDARD_REQUIRED ON
+  C_EXTENSIONS ON)
 if(MSVC)
   target_compile_options(ngtcp2 PRIVATE /W0)
   target_compile_options(nghttp3 PRIVATE /W0)
@@ -172,10 +185,13 @@ target_include_directories(matchmaker_core PUBLIC
 target_compile_definitions(matchmaker_core PUBLIC
   BOOST_ALL_NO_LIB
   BOOST_ASIO_NO_DEPRECATED
-  _WIN32_WINNT=0x0A00
-  WIN32_LEAN_AND_MEAN
   NOMINMAX
   MATCHMAKER_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(WIN32)
+  target_compile_definitions(matchmaker_core PUBLIC
+    _WIN32_WINNT=0x0A00
+    WIN32_LEAN_AND_MEAN)
+endif()
 target_link_libraries(matchmaker_core PUBLIC
   Boost::beast
   nlohmann_json::nlohmann_json
@@ -185,10 +201,10 @@ target_link_libraries(matchmaker_core PUBLIC
   OpenSSL::SSL
   OpenSSL::Crypto
   zlibstatic
-  ws2_32
-  crypt32
-  bcrypt
-  advapi32)
+  Threads::Threads)
+if(WIN32)
+  target_link_libraries(matchmaker_core PUBLIC ws2_32 crypt32 bcrypt advapi32)
+endif()
 if(MSVC)
   target_compile_options(matchmaker_core PRIVATE /W4 /permissive- /Zc:__cplusplus /utf-8 /EHsc /bigobj)
 endif()
@@ -222,11 +238,14 @@ function(mm_copy_runtime target)
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/migrations"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${CMAKE_SOURCE_DIR}/migrations/sqlite"
-      "$<TARGET_FILE_DIR:${target}>/migrations/sqlite"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${OPENSSL_ROOT_DIR}/bin/libssl-4-x64.dll"
-      "${OPENSSL_ROOT_DIR}/bin/libcrypto-4-x64.dll"
-      "$<TARGET_FILE_DIR:${target}>")
+      "$<TARGET_FILE_DIR:${target}>/migrations/sqlite")
+  if(WIN32)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${OPENSSL_ROOT_DIR}/bin/libssl-4-x64.dll"
+        "${OPENSSL_ROOT_DIR}/bin/libcrypto-4-x64.dll"
+        "$<TARGET_FILE_DIR:${target}>")
+  endif()
 endfunction()
 
 mm_copy_runtime(matchmaker)

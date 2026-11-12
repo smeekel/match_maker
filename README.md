@@ -10,14 +10,19 @@ The wire API is specified in [PROTOCOL.md](PROTOCOL.md).
 
 ## Requirements
 
-- Windows
 - CMake 3.28 or newer
-- MSVC with `/std:c++latest` (Visual Studio's C++26 mode)
-- OpenSSL, default install at `C:/Program Files/OpenSSL-Win64`, using the VC x64 MD libraries (`lib/VC/x64/MD`). Override the root with `-DOPENSSL_ROOT_DIR=...` if it lives elsewhere.
+- A C++20 compiler
+- OpenSSL 3
+
+Windows: MSVC, and OpenSSL at `C:/Program Files/OpenSSL-Win64`, using the VC x64 MD libraries (`lib/VC/x64/MD`). Override the root with `-DOPENSSL_ROOT_DIR=...` if it lives elsewhere.
+
+Debian: `build-essential`, `cmake`, and `libssl-dev`. The binary links the system `libssl` and `libcrypto`.
 
 The first configure downloads Boost 1.90 (Beast and Asio), the SQLite amalgamation, nlohmann/json, zlib, doctest, ngtcp2 1.26 (QUIC, built against the OpenSSL above), and nghttp3 1.19 (QPACK).
 
 ## Build
+
+Windows:
 
 ```powershell
 cmake -S . -B out/build/x64-Debug
@@ -25,7 +30,17 @@ cmake --build out/build/x64-Debug --config Debug
 ctest --test-dir out/build/x64-Debug -C Debug --output-on-failure
 ```
 
-The build copies `migrations/sqlite` and the OpenSSL DLLs (`libssl-4-x64.dll`, `libcrypto-4-x64.dll`) next to `matchmaker.exe` and `matchmaker_tests.exe`.
+The Windows build copies `migrations/sqlite` and the OpenSSL DLLs (`libssl-4-x64.dll`, `libcrypto-4-x64.dll`) next to `matchmaker.exe` and `matchmaker_tests.exe`.
+
+Debian:
+
+```bash
+cmake -S . -B out/build
+cmake --build out/build -j
+ctest --test-dir out/build --output-on-failure
+```
+
+The Debian build copies `migrations/sqlite` next to the `matchmaker` and `matchmaker_tests` binaries. OpenSSL stays the shared library from `libssl-dev`.
 
 ## Run
 

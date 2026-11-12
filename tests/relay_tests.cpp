@@ -11,6 +11,11 @@
 #include <thread>
 #include <type_traits>
 
+#ifndef _WIN32
+#include <sys/socket.h>
+#include <sys/time.h>
+#endif
+
 using namespace matchmaker;
 using boost::asio::ip::tcp;
 using boost::asio::ip::udp;

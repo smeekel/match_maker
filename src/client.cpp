@@ -206,10 +206,24 @@ nlohmann::json Client::ws_read(std::chrono::milliseconds timeout)
   {
     throw std::runtime_error("websocket is not open");
   }
+  // Synchronous websocket::read blocks in recv on Linux, so the Beast
+  // timer never runs. An async read lets that timer cancel the socket.
   impl_->ioc.restart();
-  beast::get_lowest_layer(*impl_->ws).expires_after(timeout);
+  auto& lowest = beast::get_lowest_layer(*impl_->ws);
+  lowest.expires_after(timeout);
   impl_->ws_buffer.clear();
-  impl_->ws->read(impl_->ws_buffer);
+  beast::error_code ec;
+  impl_->ws->async_read(impl_->ws_buffer,
+                        [&ec](beast::error_code e, std::size_t)
+                        {
+                          ec = e;
+                        });
+  impl_->ioc.run();
+  lowest.expires_never();
+  if( ec )
+  {
+    throw std::runtime_error(ec.message());
+  }
   const auto text = beast::buffers_to_string(impl_->ws_buffer.data());
   auto parsed = nlohmann::json::parse(text, nullptr, false);
   if( parsed.is_discarded() )
