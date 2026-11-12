@@ -62,7 +62,7 @@ public:
   Result<nlohmann::json> begin_join(const Actor& actor, const std::string& lobby_id,
                                     const std::optional<std::string>& password, Time now);
   Result<nlohmann::json> complete_connect(const std::string& user_id, const std::string& lobby_id,
-                                          Time now);
+                                          Time now, const std::string& transport = "websocket");
   Status leave(const std::string& user_id, Time now);
   Status close_lobby(const Actor& actor, Time now);
   Status set_phase(const Actor& actor, const std::string& lobby_id, const std::string& phase);
@@ -100,6 +100,7 @@ private:
     std::string external_id;
     bool ready = false;
     bool connected = false;
+    std::string transport;
     enum class Hold
     {
       None,

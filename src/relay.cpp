@@ -289,8 +289,14 @@ bool RelayService::take_port(int port)
 
 void RelayService::free_ports(const Channel& channel)
 {
-  used_ports_.erase(channel.port_a);
-  used_ports_.erase(channel.port_b);
+  if( channel.port_a != 0 )
+  {
+    used_ports_.erase(channel.port_a);
+  }
+  if( channel.port_b != 0 )
+  {
+    used_ports_.erase(channel.port_b);
+  }
 }
 
 void RelayService::finalize_close(const std::string& id, const std::string& reason)
@@ -349,13 +355,17 @@ void RelayService::request_close(const std::shared_ptr<Channel>& channel, std::s
 
 Result<ChannelInfo> RelayService::allocate(const ChannelRequest& request, Time now)
 {
-  if( request.protocol != "udp" && request.protocol != "tcp" )
+  if( request.protocol != "udp" && request.protocol != "tcp" && request.protocol != "wt" )
   {
-    return Err(ErrorCode::BadRequest, "protocol must be udp or tcp");
+    return Err(ErrorCode::BadRequest, "protocol must be udp, tcp, or wt");
   }
   if( request.protocol == "tcp" && !config_.tcp_enabled )
   {
     return Err(ErrorCode::Limit, "tcp relay is disabled");
+  }
+  if( request.protocol == "wt" && !config_.wt_enabled )
+  {
+    return Err(ErrorCode::Limit, "wt relay is disabled");
   }
   if( static_cast<int>(channels_.size()) >= config_.max_concurrent )
   {
@@ -364,6 +374,32 @@ Result<ChannelInfo> RelayService::allocate(const ChannelRequest& request, Time n
   if( request.user_a.empty() || request.user_b.empty() || request.user_a == request.user_b )
   {
     return Err(ErrorCode::BadRequest, "a channel needs two distinct users");
+  }
+  if( request.protocol == "wt" )
+  {
+    auto channel = std::make_shared<Channel>();
+    channel->id = uuid_v4();
+    channel->lobby_id = request.lobby_id;
+    channel->user_a = request.user_a;
+    channel->user_b = request.user_b;
+    channel->protocol = request.protocol;
+    channel->expires = now + std::chrono::seconds(request.lifetime_sec);
+    channel->last_ns.store(to_ns(now));
+    channel->idle_sec = request.idle_sec;
+    channel->max_packet = request.max_packet > 0 ? request.max_packet : config_.max_packet;
+    channel->bytes_per_sec = request.bytes_per_sec;
+    channel->bucket = request.bytes_per_sec > 0 ? request.bytes_per_sec : 0;
+    channel->bucket_at = now;
+    channel->io_strand = boost::asio::make_strand(ioc_);
+    ChannelInfo info;
+    info.id = channel->id;
+    info.lobby_id = channel->lobby_id;
+    info.protocol = channel->protocol;
+    info.expires_at_ms = wall_ms() + static_cast<std::int64_t>(request.lifetime_sec) * 1000;
+    info.a = SideInfo{request.user_a, {}, 0, {}};
+    info.b = SideInfo{request.user_b, {}, 0, {}};
+    channels_.emplace(channel->id, channel);
+    return info;
   }
   auto grab = [&]() -> std::optional<int>
   {
@@ -622,6 +658,45 @@ void RelayService::on_udp(const std::shared_ptr<Channel>& channel, int side,
                                    }));
   };
   (*pump)();
+}
+
+std::optional<std::string> RelayService::forward_wt(std::span<const std::uint8_t, 16> channel_id,
+                                                    const std::string& sender,
+                                                    std::size_t payload_bytes, Time now)
+{
+  const auto it = channels_.find(uuid_string(channel_id));
+  if( it == channels_.end() || it->second->protocol != "wt" || it->second->closing.load() )
+  {
+    drops_.fetch_add(1);
+    return std::nullopt;
+  }
+  auto& channel = *it->second;
+  if( sender != channel.user_a && sender != channel.user_b )
+  {
+    drops_.fetch_add(1);
+    return std::nullopt;
+  }
+  if( static_cast<int>(payload_bytes) > channel.max_packet )
+  {
+    drops_.fetch_add(1);
+    return std::nullopt;
+  }
+  if( channel.bytes_per_sec > 0 )
+  {
+    const double elapsed = std::chrono::duration<double>(now - channel.bucket_at).count();
+    channel.bucket = std::min<double>(channel.bytes_per_sec,
+                                      channel.bucket + elapsed * channel.bytes_per_sec);
+    channel.bucket_at = now;
+    if( channel.bucket < static_cast<double>(payload_bytes) )
+    {
+      drops_.fetch_add(1);
+      return std::nullopt;
+    }
+    channel.bucket -= static_cast<double>(payload_bytes);
+  }
+  channel.last_ns.store(to_ns(now));
+  forwarded_.fetch_add(payload_bytes);
+  return sender == channel.user_a ? channel.user_b : channel.user_a;
 }
 
 Status RelayService::release(const std::string& id, Time)

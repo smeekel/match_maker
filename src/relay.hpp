@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 
@@ -23,6 +25,7 @@ struct RelayConfig
   int max_concurrent = 4096;
   int max_packet = 1200;
   bool tcp_enabled = false;
+  bool wt_enabled = false;
 };
 
 struct ChannelRequest
@@ -84,6 +87,11 @@ public:
   Status release(const std::string& id, Time now);
   void release_lobby(const std::string& lobby_id, Time now);
   void tick(Time now);
+  // Checks one WebTransport datagram of |payload_bytes| from |sender| on a wt
+  // channel and returns the user it goes to, or nullopt when it is dropped.
+  std::optional<std::string> forward_wt(std::span<const std::uint8_t, 16> channel_id,
+                                        const std::string& sender, std::size_t payload_bytes,
+                                        Time now);
   void set_on_closed(std::function<void(const RelayClosed&)> fn);
   int channels() const;
   std::uint64_t forwarded_bytes() const;

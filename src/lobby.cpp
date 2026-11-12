@@ -139,7 +139,9 @@ nlohmann::json LobbyService::snapshot(const Lobby& lobby) const
                        {"alias", member.alias},
                        {"external_id", member.external_id},
                        {"ready", member.ready},
-                       {"connected", member.connected}});
+                       {"connected", member.connected},
+                       {"transport", member.connected ? nlohmann::json(member.transport)
+                                                      : nlohmann::json(nullptr)}});
   }
   snap["members"] = std::move(members);
   return snap;
@@ -322,7 +324,8 @@ Result<nlohmann::json> LobbyService::begin_join(const Actor& actor, const std::s
 }
 
 Result<nlohmann::json> LobbyService::complete_connect(const std::string& user_id,
-                                                      const std::string& lobby_id, Time now)
+                                                      const std::string& lobby_id, Time now,
+                                                      const std::string& transport)
 {
   auto* lobby = find_lobby(lobby_id);
   if( !lobby )
@@ -341,13 +344,16 @@ Result<nlohmann::json> LobbyService::complete_connect(const std::string& user_id
   const bool was_host = member->hold == Member::Hold::Host;
   member->hold = Member::Hold::None;
   member->connected = true;
+  member->transport = transport;
   if( was_host || user_id == lobby->host_id )
   {
     lobby->last_heartbeat = now;
     lobby->host_ever_connected = true;
   }
-  emit(event_of("user_entered",
-                {{"lobby_id", lobby->id}, {"user_id", member->user_id}, {"alias", member->alias}}),
+  emit(event_of("user_entered", {{"lobby_id", lobby->id},
+                                 {"user_id", member->user_id},
+                                 {"alias", member->alias},
+                                 {"transport", transport}}),
        connected_ids(*lobby, user_id));
   return snapshot(*lobby);
 }

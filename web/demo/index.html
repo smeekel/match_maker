@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Matchmaker WebTransport demo</title>
+  <style>
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 1.5rem; max-width: 960px; }
+    fieldset { margin-bottom: 1rem; border: 1px solid #ccc; border-radius: 6px; }
+    legend { font-weight: 600; }
+    label { display: inline-block; margin: 0.2rem 0.6rem 0.2rem 0; }
+    input[type=text] { width: 18rem; }
+    button { margin: 0.2rem 0.3rem 0.2rem 0; }
+    table { border-collapse: collapse; }
+    td, th { padding: 0.2rem 0.6rem; border-bottom: 1px solid #eee; text-align: left; }
+    #log { background: #111; color: #ddd; height: 18rem; overflow: auto; padding: 0.5rem;
+           font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; border-radius: 6px; }
+    .muted { color: #777; }
+  </style>
+</head>
+<body>
+  <h1>Matchmaker WebTransport demo</h1>
+  <p class="muted">Open this page in two tabs. In the first, sign in and create a lobby. In the
+    second, sign in and join it. The host then allocates a <code>wt</code> channel to the guest,
+    and either side can send datagrams on it.</p>
+
+  <fieldset>
+    <legend>Server</legend>
+    <label>HTTPS URL <input type="text" id="baseUrl" value="https://localhost"></label>
+    <label>WebTransport origin (optional) <input type="text" id="wtOrigin" placeholder="https://localhost:4433"></label><br>
+    <label>Certificate SHA-256 (optional, dev certificates only)
+      <input type="text" id="certHash" placeholder="hex digest of the DER certificate"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Sign in</legend>
+    <label>Game id <input type="text" id="gameId"></label>
+    <label>Game token <input type="text" id="gameToken"></label>
+    <label>Alias <input type="text" id="alias" value="player"></label>
+    <button id="signIn">Sign in</button>
+    <span id="who" class="muted"></span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Lobby</legend>
+    <button id="create" disabled>Create lobby</button>
+    <button id="list" disabled>List lobbies</button>
+    <label>Lobby id <input type="text" id="lobbyId"></label>
+    <button id="join" disabled>Join</button>
+    <button id="open" disabled>Open lobby (host)</button>
+    <button id="leave" disabled>Leave</button>
+    <div id="lobbies"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Members</legend>
+    <table>
+      <thead><tr><th>Alias</th><th>User id</th><th>Transport</th><th></th></tr></thead>
+      <tbody id="members"></tbody>
+    </table>
+  </fieldset>
+
+  <fieldset>
+    <legend>Chat</legend>
+    <input type="text" id="chatText" placeholder="say something">
+    <button id="chat" disabled>Send</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Datagrams</legend>
+    <label>Channel <select id="channel"></select></label>
+    <input type="text" id="datagramText" value="hello over wt">
+    <button id="sendDatagram" disabled>Send datagram</button>
+    <button id="release" disabled>Release channels (host)</button>
+  </fieldset>
+
+  <div id="log"></div>
+
+  <script type="module">
+    import { MatchmakerClient } from '../src/matchmaker.js';
+
+    const $ = (id) => document.getElementById(id);
+    let client = null;
+    let session = null;
+    let members = new Map();
+
+    function log(text, data) {
+      const line = `[${new Date().toLocaleTimeString()}] ${text}` +
+        (data === undefined ? '' : ` ${JSON.stringify(data)}`);
+      $('log').textContent += line + '\n';
+      $('log').scrollTop = $('log').scrollHeight;
+    }
+
+    function fail(err) {
+      log(`error: ${err.message}`, err.body || err.reply);
+    }
+
+    function isHost() {
+      return session && session.snapshot && session.snapshot.host_id === client.userId;
+    }
+
+    function renderMembers() {
+      const body = $('members');
+      body.textContent = '';
+      for (const member of members.values()) {
+        const row = document.createElement('tr');
+        for (const value of [member.alias, member.user_id, member.transport ?? 'reserved']) {
+          const cell = document.createElement('td');
+          cell.textContent = value;
+          row.appendChild(cell);
+        }
+        const action = document.createElement('td');
+        if (isHost() && member.user_id !== client.userId) {
+          const button = document.createElement('button');
+          button.textContent = 'Allocate wt';
+          button.disabled = member.transport !== 'webtransport';
+          button.onclick = () => session.allocateWt(member.user_id)
+            .then((ok) => log('allocated', ok.allocations))
+            .catch(fail);
+          action.appendChild(button);
+        }
+        row.appendChild(action);
+        body.appendChild(row);
+      }
+    }
+
+    function renderChannels() {
+      const select = $('channel');
+      select.textContent = '';
+      for (const [id, channel] of session ? session.channels : []) {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = `${id.slice(0, 8)}… to ${members.get(channel.peer_user_id)?.alias ?? channel.peer_user_id}`;
+        select.appendChild(option);
+      }
+      $('sendDatagram').disabled = select.options.length === 0;
+    }
+
+    function setInLobby(inLobby) {
+      $('create').disabled = inLobby;
+      $('join').disabled = inLobby;
+      $('chat').disabled = !inLobby;
+      $('leave').disabled = !inLobby;
+      $('open').disabled = !inLobby || !isHost();
+      $('release').disabled = !inLobby || !isHost();
+    }
+
+    async function enterLobby() {
+      session = await client.connect();
+      members = new Map(session.snapshot.members.map((m) => [m.user_id, m]));
+      log('lobby session open', { lobby_id: session.lobbyId, host_id: session.snapshot.host_id });
+      $('lobbyId').value = session.lobbyId;
+      if (isHost()) {
+        session.startHeartbeat(10000);
+      }
+      session.addEventListener('event', (e) => {
+        const event = e.detail;
+        log(`event ${event.event}`, event);
+        if (event.event === 'user_entered') {
+          members.set(event.user_id, { user_id: event.user_id, alias: event.alias, transport: event.transport });
+        } else if (event.event === 'user_left') {
+          members.delete(event.user_id);
+        } else if (event.event === 'host_changed') {
+          session.snapshot.host_id = event.host_id;
+          if (isHost()) {
+            session.startHeartbeat(10000);
+          }
+        }
+        renderMembers();
+        renderChannels();
+        setInLobby(true);
+      });
+      session.addEventListener('datagram', (e) => {
+        log(`datagram on ${e.detail.channelId.slice(0, 8)}…: ${new TextDecoder().decode(e.detail.data)}`);
+      });
+      session.addEventListener('close', (e) => {
+        log(`lobby session closed: ${e.detail.reason}`);
+        session = null;
+        members.clear();
+        renderMembers();
+        renderChannels();
+        setInLobby(false);
+      });
+      renderMembers();
+      renderChannels();
+      setInLobby(true);
+    }
+
+    $('signIn').onclick = async () => {
+      try {
+        const hash = $('certHash').value.trim();
+        client = new MatchmakerClient({
+          baseUrl: $('baseUrl').value.trim(),
+          webTransportOrigin: $('wtOrigin').value.trim() || undefined,
+          serverCertificateHashes: hash ? [hash] : undefined,
+        });
+        const config = await client.config();
+        if (!config.webtransport?.enabled) {
+          log('this server has WebTransport turned off (relay_wt_enabled = 0)');
+        }
+        const res = await client.auth($('gameId').value.trim(), $('gameToken').value, {
+          alias: $('alias').value.trim(),
+        });
+        $('who').textContent = `signed in as ${res.user_id}`;
+        $('create').disabled = false;
+        $('list').disabled = false;
+        $('join').disabled = false;
+        log('signed in', { user_id: res.user_id });
+      } catch (err) {
+        fail(err);
+      }
+    };
+
+    $('create').onclick = async () => {
+      try {
+        const lobby = await client.createLobby();
+        log('lobby created', lobby);
+        await enterLobby();
+      } catch (err) {
+        fail(err);
+      }
+    };
+
+    $('list').onclick = async () => {
+      try {
+        const listed = await client.listLobbies();
+        const box = $('lobbies');
+        box.textContent = '';
+        for (const lobby of listed.lobbies) {
+          const button = document.createElement('button');
+          button.textContent = `${lobby.lobby_id.slice(0, 8)}… (${lobby.member_count}/${lobby.slots}, ${lobby.phase})`;
+          button.onclick = () => { $('lobbyId').value = lobby.lobby_id; };
+          box.appendChild(button);
+        }
+        if (!listed.lobbies.length) {
+          box.textContent = 'no lobbies';
+        }
+      } catch (err) {
+        fail(err);
+      }
+    };
+
+    $('join').onclick = async () => {
+      try {
+        const joined = await client.joinLobby($('lobbyId').value.trim());
+        log('joined', joined);
+        await enterLobby();
+      } catch (err) {
+        fail(err);
+      }
+    };
+
+    $('open').onclick = () => session.setPhase('open').then(() => log('lobby is open')).catch(fail);
+    $('leave').onclick = () => session.leave().catch(fail);
+    $('chat').onclick = () => session.chat($('chatText').value).catch(fail);
+    $('release').onclick = () => session.releaseRelays().then(() => log('released')).catch(fail);
+    $('sendDatagram').onclick = () => {
+      session.sendDatagram($('channel').value, $('datagramText').value).catch(fail);
+    };
+  </script>
+</body>
+</html>

@@ -48,6 +48,10 @@ struct SystemConfig
   int relay_port_start = 30000;
   int relay_port_end = 39999;
   bool relay_tcp_enabled = false;
+  bool relay_wt_enabled = false;
+  std::string wt_listen = "0.0.0.0:443";
+  std::string cors_origins;
+  int wt_ticket_sec = 30;
   int auth_fail_limit = 20;
   int auth_fail_window_sec = 60;
   int probe_timeout_ms = 500;

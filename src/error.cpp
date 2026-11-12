@@ -41,6 +41,8 @@ const char* error_code_string(ErrorCode code)
       return "already_in_lobby";
   case ErrorCode::NotFound:
     return "not_found";
+  case ErrorCode::Forbidden:
+    return "forbidden";
   case ErrorCode::Internal:
     return "internal";
   }
@@ -60,6 +62,7 @@ int http_status(ErrorCode code)
     return 401;
   case ErrorCode::NotHost:
   case ErrorCode::NotMember:
+  case ErrorCode::Forbidden:
     return 403;
   case ErrorCode::NotFound:
     case ErrorCode::UnknownUser:

@@ -112,6 +112,11 @@ std::string uuid_v4()
   random_bytes(b);
   b[6] = static_cast<std::uint8_t>((b[6] & 0x0f) | 0x40);
   b[8] = static_cast<std::uint8_t>((b[8] & 0x3f) | 0x80);
+  return uuid_string(b);
+}
+
+std::string uuid_string(std::span<const std::uint8_t, 16> b)
+{
   static constexpr char kHex[] = "0123456789abcdef";
   std::string s(36, '-');
   int p = 0;
@@ -125,6 +130,52 @@ std::string uuid_v4()
     s[p++] = kHex[b[i] & 0x0f];
   }
   return s;
+}
+
+std::optional<std::array<std::uint8_t, 16>> uuid_bytes(std::string_view text)
+{
+  if( text.size() != 36 )
+  {
+    return std::nullopt;
+  }
+  auto nibble = [](char c) -> int
+  {
+    if( c >= '0' && c <= '9' )
+    {
+      return c - '0';
+    }
+    if( c >= 'a' && c <= 'f' )
+    {
+      return c - 'a' + 10;
+    }
+    if( c >= 'A' && c <= 'F' )
+    {
+      return c - 'A' + 10;
+    }
+    return -1;
+  };
+  std::array<std::uint8_t, 16> out{};
+  std::size_t p = 0;
+  for( std::size_t i = 0; i < 16; ++i )
+  {
+    if( i == 4 || i == 6 || i == 8 || i == 10 )
+    {
+      if( text[p] != '-' )
+      {
+        return std::nullopt;
+      }
+      ++p;
+    }
+    const int hi = nibble(text[p]);
+    const int lo = nibble(text[p + 1]);
+    if( hi < 0 || lo < 0 )
+    {
+      return std::nullopt;
+    }
+    out[i] = static_cast<std::uint8_t>((hi << 4) | lo);
+    p += 2;
+  }
+  return out;
 }
 
 } // namespace matchmaker

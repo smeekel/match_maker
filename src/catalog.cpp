@@ -103,6 +103,10 @@ SystemConfig SystemConfig::from_map(const std::map<std::string, std::string>& va
   cfg.relay_port_start = parse_int(values, "relay_port_start", cfg.relay_port_start);
   cfg.relay_port_end = parse_int(values, "relay_port_end", cfg.relay_port_end);
   cfg.relay_tcp_enabled = parse_bool(values, "relay_tcp_enabled", cfg.relay_tcp_enabled);
+  cfg.relay_wt_enabled = parse_bool(values, "relay_wt_enabled", cfg.relay_wt_enabled);
+  cfg.wt_listen = parse_string(values, "wt_listen", cfg.wt_listen);
+  cfg.cors_origins = parse_string(values, "cors_origins", cfg.cors_origins);
+  cfg.wt_ticket_sec = parse_int(values, "wt_ticket_sec", cfg.wt_ticket_sec);
   cfg.auth_fail_limit = parse_int(values, "auth_fail_limit", cfg.auth_fail_limit);
   cfg.auth_fail_window_sec = parse_int(values, "auth_fail_window_sec", cfg.auth_fail_window_sec);
   cfg.probe_timeout_ms = parse_int(values, "probe_timeout_ms", cfg.probe_timeout_ms);
@@ -123,6 +127,10 @@ void clamp_game(GameRecord& game, const SystemConfig& system)
   if( !system.relay_tcp_enabled )
   {
     limits.allow_tcp = false;
+  }
+  if( !system.relay_wt_enabled )
+  {
+    limits.allow_wt = false;
   }
   if( limits.max_players_per_lobby < 1 )
   {

@@ -26,6 +26,7 @@ enum class ErrorCode
   UnknownUser,
   AlreadyInLobby,
   NotFound,
+  Forbidden,
   Internal
 };
 

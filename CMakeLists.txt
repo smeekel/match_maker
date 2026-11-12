@@ -71,6 +71,75 @@ set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libssl.lib")
 set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libcrypto.lib")
 find_package(OpenSSL REQUIRED)
 
+set(NGTCP2_VERSION 1.26.0)
+set(NGTCP2_DIR "${MM_DEPS}/ngtcp2-${NGTCP2_VERSION}")
+set(NGTCP2_ARCHIVE "${MM_DEPS}/ngtcp2-${NGTCP2_VERSION}.tar.xz")
+mm_fetch(ngtcp2
+  "https://github.com/ngtcp2/ngtcp2/releases/download/v${NGTCP2_VERSION}/ngtcp2-${NGTCP2_VERSION}.tar.xz"
+  "${NGTCP2_ARCHIVE}")
+if(NOT EXISTS "${NGTCP2_DIR}/lib/ngtcp2_conn.c")
+  file(ARCHIVE_EXTRACT INPUT "${NGTCP2_ARCHIVE}" DESTINATION "${MM_DEPS}")
+endif()
+
+set(NGHTTP3_VERSION 1.19.0)
+set(NGHTTP3_DIR "${MM_DEPS}/nghttp3-${NGHTTP3_VERSION}")
+set(NGHTTP3_ARCHIVE "${MM_DEPS}/nghttp3-${NGHTTP3_VERSION}.tar.xz")
+mm_fetch(nghttp3
+  "https://github.com/ngtcp2/nghttp3/releases/download/v${NGHTTP3_VERSION}/nghttp3-${NGHTTP3_VERSION}.tar.xz"
+  "${NGHTTP3_ARCHIVE}")
+if(NOT EXISTS "${NGHTTP3_DIR}/lib/nghttp3_qpack.c")
+  file(ARCHIVE_EXTRACT INPUT "${NGHTTP3_ARCHIVE}" DESTINATION "${MM_DEPS}")
+endif()
+
+# Both projects define a top-level `check` target, so they cannot be added as
+# subdirectories of one Ninja build. Their library sources are compiled here.
+set(MM_QUIC_GEN "${CMAKE_BINARY_DIR}/quic")
+set(ssize_t ptrdiff_t)
+set(HAVE_DECL_BE64TOH 0)
+set(HAVE_DECL_BSWAP_64 0)
+configure_file("${NGTCP2_DIR}/cmakeconfig.h.in" "${MM_QUIC_GEN}/ngtcp2/config.h")
+configure_file("${NGHTTP3_DIR}/cmakeconfig.h.in" "${MM_QUIC_GEN}/nghttp3/config.h")
+set(PACKAGE_VERSION "${NGTCP2_VERSION}")
+set(PACKAGE_VERSION_NUM 0x011a00)
+configure_file("${NGTCP2_DIR}/lib/includes/ngtcp2/version.h.in"
+  "${MM_QUIC_GEN}/ngtcp2/includes/ngtcp2/version.h" @ONLY)
+set(PACKAGE_VERSION "${NGHTTP3_VERSION}")
+set(PACKAGE_VERSION_NUM 0x011300)
+configure_file("${NGHTTP3_DIR}/lib/includes/nghttp3/version.h.in"
+  "${MM_QUIC_GEN}/nghttp3/includes/nghttp3/version.h" @ONLY)
+
+file(GLOB NGTCP2_SOURCES "${NGTCP2_DIR}/lib/*.c")
+add_library(ngtcp2 STATIC ${NGTCP2_SOURCES}
+  "${NGTCP2_DIR}/crypto/ossl/ossl.c"
+  "${NGTCP2_DIR}/crypto/shared.c")
+target_include_directories(ngtcp2
+  PUBLIC
+    "${NGTCP2_DIR}/lib/includes"
+    "${MM_QUIC_GEN}/ngtcp2/includes"
+    "${NGTCP2_DIR}/crypto/includes"
+  PRIVATE
+    "${MM_QUIC_GEN}/ngtcp2"
+    "${NGTCP2_DIR}/lib"
+    "${NGTCP2_DIR}/crypto")
+target_compile_definitions(ngtcp2 PUBLIC NGTCP2_STATICLIB PRIVATE HAVE_CONFIG_H BUILDING_NGTCP2)
+target_link_libraries(ngtcp2 PUBLIC OpenSSL::SSL OpenSSL::Crypto ws2_32)
+
+file(GLOB NGHTTP3_SOURCES "${NGHTTP3_DIR}/lib/*.c")
+add_library(nghttp3 STATIC ${NGHTTP3_SOURCES} "${NGHTTP3_DIR}/lib/sfparse/sfparse.c")
+target_include_directories(nghttp3
+  PUBLIC
+    "${NGHTTP3_DIR}/lib/includes"
+    "${MM_QUIC_GEN}/nghttp3/includes"
+  PRIVATE
+    "${MM_QUIC_GEN}/nghttp3"
+    "${NGHTTP3_DIR}/lib")
+target_compile_definitions(nghttp3 PUBLIC NGHTTP3_STATICLIB PRIVATE HAVE_CONFIG_H BUILDING_NGHTTP3)
+set_target_properties(ngtcp2 nghttp3 PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+if(MSVC)
+  target_compile_options(ngtcp2 PRIVATE /W0)
+  target_compile_options(nghttp3 PRIVATE /W0)
+endif()
+
 add_library(sqlite3 STATIC "${MM_DEPS}/sqlite-amalgamation-3500100/sqlite3.c")
 target_include_directories(sqlite3 PUBLIC "${MM_DEPS}/sqlite-amalgamation-3500100")
 target_compile_definitions(sqlite3 PRIVATE
@@ -92,6 +161,8 @@ set(MM_SOURCES
   src/lobby.cpp
   src/relay.cpp
   src/log.cpp
+  src/h3.cpp
+  src/wt.cpp
   src/net.cpp)
 
 add_library(matchmaker_core STATIC ${MM_SOURCES})
@@ -109,6 +180,8 @@ target_link_libraries(matchmaker_core PUBLIC
   Boost::beast
   nlohmann_json::nlohmann_json
   sqlite3
+  ngtcp2
+  nghttp3
   OpenSSL::SSL
   OpenSSL::Crypto
   zlibstatic
@@ -135,7 +208,9 @@ add_executable(matchmaker_tests
   tests/store_tests.cpp
   tests/lobby_tests.cpp
   tests/relay_tests.cpp
-  tests/integration_tests.cpp)
+  tests/integration_tests.cpp
+  tests/wt_peer.cpp
+  tests/wt_tests.cpp)
 target_link_libraries(matchmaker_tests PRIVATE matchmaker_core matchmaker_client doctest::doctest)
 if(MSVC)
   target_compile_options(matchmaker PRIVATE /W4 /permissive- /Zc:__cplusplus /utf-8 /EHsc)

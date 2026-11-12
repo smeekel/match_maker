@@ -2,6 +2,8 @@
 
 One process hosts lobbies for any number of games. Clients speak HTTPS and a lobby WebSocket to this process. Game payloads go through relay ports the process allocates, always between the host and one other member. There is no hole punching and no player UI.
 
+Browsers, or any client that prefers it, can replace the lobby WebSocket and the relay ports with one WebTransport session: HTTPS for auth and lobby discovery, then HTTP/3 for lobby ops and datagrams. See [WebTransport](#webtransport).
+
 Sessions, lobbies, and forwarders live in memory. SQLite holds configuration, games, and operational logs. Restarting the process drops every live session, and a JWT from a previous process is rejected.
 
 The wire API is specified in [PROTOCOL.md](PROTOCOL.md).
@@ -13,7 +15,7 @@ The wire API is specified in [PROTOCOL.md](PROTOCOL.md).
 - MSVC with `/std:c++latest` (Visual Studio's C++26 mode)
 - OpenSSL, default install at `C:/Program Files/OpenSSL-Win64`, using the VC x64 MD libraries (`lib/VC/x64/MD`). Override the root with `-DOPENSSL_ROOT_DIR=...` if it lives elsewhere.
 
-The first configure downloads Boost 1.90 (Beast and Asio), the SQLite amalgamation, nlohmann/json, zlib, and doctest.
+The first configure downloads Boost 1.90 (Beast and Asio), the SQLite amalgamation, nlohmann/json, zlib, doctest, ngtcp2 1.26 (QUIC, built against the OpenSSL above), and nghttp3 1.19 (QPACK).
 
 ## Build
 
@@ -48,9 +50,61 @@ UPDATE config SET value = 'https://match.example.com' WHERE key = 'public_url';
 
 Migrations are read from `MATCHMAKER_MIGRATIONS`, then from `migrations/sqlite` beside the executable, then from the source tree.
 
-`SIGINT` and `SIGTERM` close lobby sockets and exit. `SIGHUP` and `SIGBREAK` reload config, regions, and games from the database. The listen address, stats address, TLS files, and worker count stay as they were at startup. Relay channels already allocated keep the lifetime they were granted.
+`SIGINT` and `SIGTERM` close lobby sockets and exit. `SIGHUP` and `SIGBREAK` reload config, regions, and games from the database. The listen address, stats address, WebTransport listener, TLS files, and worker count stay as they were at startup. Relay channels already allocated keep the lifetime they were granted.
 
 `stats_listen` (default `127.0.0.1:7711`) is plaintext. One connection receives one JSON document and the server closes. See [PROTOCOL.md](PROTOCOL.md).
+
+## WebTransport
+
+The WebTransport path is off by default. To turn it on:
+
+```sql
+UPDATE config SET value = '1' WHERE key = 'relay_wt_enabled';
+UPDATE config SET value = '0.0.0.0:443' WHERE key = 'wt_listen';
+UPDATE config SET value = 'https://game.example' WHERE key = 'cors_origins';
+```
+
+Then set `"allow_wt": true` in the `limits_json` of each game that may allocate `wt` channels, and restart. `wt_listen` is a UDP bind, so it can share port 443 with the TCP `listen` address. It is bound only at startup, and startup fails if the bind fails. It uses the `tls_cert` and `tls_key` files.
+
+A browser client calls `POST /api/v1/wt-ticket` after create or join, then opens `new WebTransport(url)` with the returned `url`. Lobby ops are length-prefixed JSON on a stream the server opens, and game bytes are datagrams prefixed with the 16-byte channel id. [PROTOCOL.md](PROTOCOL.md) has the details.
+
+Browsers require a certificate they trust for WebTransport. For development with a self-signed certificate, Chromium accepts `serverCertificateHashes` when the certificate uses ECDSA and is valid for at most 14 days. Pass its SHA-256 digest to the client:
+
+```powershell
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -days 13 -nodes `
+  -keyout dev.key -out dev.pem -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+openssl x509 -in dev.pem -outform der | openssl dgst -sha256
+```
+
+The page itself must be served from an origin listed in `cors_origins`, because it calls the HTTPS API with `fetch`. `serverCertificateHashes` covers only the WebTransport connection; `fetch` still needs a certificate the browser trusts.
+
+The ticket `url` uses the host from `public_url`. Browsers resolve `localhost` to `::1` first and do not fall back to IPv4 for WebTransport, so with `wt_listen` on `127.0.0.1` the handshake fails. Use `127.0.0.1` in `public_url` (the client's `webTransportOrigin` option also overrides it), or bind `wt_listen` to the address the hostname resolves to. The same applies to a public hostname with an AAAA record.
+
+### Browser client and demo
+
+[`web/src/matchmaker.js`](web/src/matchmaker.js) is a dependency-free ES module. It uses `fetch` for auth, list, create, and join, and `WebTransport` for the lobby session:
+
+```js
+import { MatchmakerClient } from './matchmaker.js';
+
+const mm = new MatchmakerClient({ baseUrl: 'https://match.example.com' });
+await mm.auth(gameId, gameToken, { alias: 'ada' });
+await mm.createLobby();
+const lobby = await mm.connect();
+lobby.addEventListener('event', (e) => console.log(e.detail));
+lobby.addEventListener('datagram', (e) => console.log(e.detail.channelId, e.detail.data));
+await lobby.chat('hello');
+```
+
+The host calls `lobby.allocateWt(peerUserId)`, and both sides then call `lobby.sendDatagram(channelId, bytes)`. The module answers server pings itself. A host should call `startHeartbeat(ms)` below `host_heartbeat_interval_sec`.
+
+[`web/demo/index.html`](web/demo/index.html) is a two-tab demo covering auth, create, join, chat, `wt` allocation, and a datagram exchange. Serve the `web/` folder from a listed origin, for example:
+
+```powershell
+cd web
+python -m http.server 8080
+# cors_origins = 'http://localhost:8080', then open http://localhost:8080/demo/ in two tabs
+```
 
 ## Games
 
@@ -78,7 +132,7 @@ VALUES (
 
 Games do not have modes. A game advertises modes, maps, or rules by writing lobby metadata; list, get, and the lobby snapshot all include that object.
 
-`limits_json` keys, each optional: `max_players_per_lobby`, `max_password_length`, `max_concurrent_channels`, `max_channel_lifetime_sec`, `max_idle_sec`, `allow_tcp`, `max_lobbies`, `max_metadata_bytes`, `max_chat_bytes`, `max_custom_bytes`, `max_alias_bytes`. A lobby may hold at most as many relay channels as it has player slots, and every channel connects the host to one other member. Game limits are clamped to the system caps. TCP relays also require `relay_tcp_enabled`.
+`limits_json` keys, each optional: `max_players_per_lobby`, `max_password_length`, `max_concurrent_channels`, `max_channel_lifetime_sec`, `max_idle_sec`, `allow_tcp`, `allow_wt`, `max_lobbies`, `max_metadata_bytes`, `max_chat_bytes`, `max_custom_bytes`, `max_alias_bytes`. A lobby may hold at most as many relay channels as it has player slots, and every channel connects the host to one other member. Game limits are clamped to the system caps. TCP relays also require `relay_tcp_enabled`. `wt` relays require `relay_wt_enabled`; when it is off, `allow_wt` is forced off.
 
 A reload picks up inserted and edited games. `promote_host_on_leave` hands the lobby to the earliest remaining member when the host leaves; otherwise the lobby ends. `allow_join_in_progress` lets the host offer late join after the match starts.
 
@@ -124,6 +178,10 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`.
 | `relay_port_start` | `30000` | First relay port |
 | `relay_port_end` | `39999` | Last relay port |
 | `relay_tcp_enabled` | `0` | Allow TCP relays when the game also sets `allow_tcp` |
+| `relay_wt_enabled` | `0` | Start the WebTransport listener (startup only) and allow `wt` relays when the game sets `allow_wt` |
+| `wt_listen` | `0.0.0.0:443` | UDP bind for HTTP/3 WebTransport, used only when `relay_wt_enabled` (fixed at startup) |
+| `cors_origins` | empty | Comma- or space-separated browser origins allowed on HTTPS, WebSocket, and WebTransport; `*` allows any; empty disables CORS |
+| `wt_ticket_sec` | `30` | Lifetime of a one-time WebTransport ticket |
 | `auth_fail_limit` | `20` | Failed auths per source before rate limiting |
 | `auth_fail_window_sec` | `60` | Auth failure window |
 | `probe_timeout_ms` | `500` | Host RTT probe timeout |
@@ -134,11 +192,12 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`.
 
 | Path | Contents |
 | --- | --- |
-| `src/` | Server: HTTPS, lobby WebSocket, UDP/TCP relay, SQLite, JWT |
+| `src/` | Server: HTTPS, lobby WebSocket, WebTransport (`wt.cpp`, `h3.cpp`), UDP/TCP relay, SQLite, JWT |
 | `include/matchmaker/client.hpp` | In-tree HTTPS and WebSocket client linked by the tests |
-| `tests/` | doctest suites (`matchmaker_tests`) |
+| `web/` | Browser client (`src/matchmaker.js`) and two-tab demo (`demo/index.html`) |
+| `tests/` | doctest suites (`matchmaker_tests`), including a small ngtcp2 WebTransport peer (`wt_peer.cpp`) |
 | `migrations/sqlite/` | Schema and default config |
-| `PROTOCOL.md` | HTTP, WebSocket, and relay specification |
+| `PROTOCOL.md` | HTTP, WebSocket, WebTransport, and relay specification |
 
 ## Logs
 

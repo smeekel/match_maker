@@ -14,6 +14,7 @@ struct Limits
   int max_channel_lifetime_sec = 3600;
   int max_idle_sec = 60;
   bool allow_tcp = false;
+  bool allow_wt = false;
   int max_lobbies = 1000;
   int max_metadata_bytes = 8192;
   int max_chat_bytes = 512;

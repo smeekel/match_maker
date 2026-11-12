@@ -55,6 +55,10 @@ Limits parse_limits(const std::string& text)
   {
     limits.allow_tcp = json["allow_tcp"].get<bool>();
   }
+  if( json.contains("allow_wt") && json["allow_wt"].is_boolean() )
+  {
+    limits.allow_wt = json["allow_wt"].get<bool>();
+  }
   return limits;
 }
 
@@ -66,6 +70,7 @@ std::string limits_json(const Limits& limits)
                          {"max_channel_lifetime_sec", limits.max_channel_lifetime_sec},
                          {"max_idle_sec", limits.max_idle_sec},
                          {"allow_tcp", limits.allow_tcp},
+                         {"allow_wt", limits.allow_wt},
                          {"max_lobbies", limits.max_lobbies},
                          {"max_metadata_bytes", limits.max_metadata_bytes},
                          {"max_chat_bytes", limits.max_chat_bytes},

@@ -3,11 +3,13 @@
 #include "catalog.hpp"
 #include "crypto.hpp"
 #include "jwt.hpp"
+#include "link.hpp"
 #include "lobby.hpp"
 #include "log.hpp"
 #include "relay.hpp"
 #include "store.hpp"
 #include "util.hpp"
+#include "wt.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -192,6 +194,12 @@ struct App::State
     Clock::time_point start = Clock::now();
   };
 
+  struct WtTicket
+  {
+    std::string user_id;
+    Clock::time_point expires;
+  };
+
   class WsSession;
 
   std::string database_path;
@@ -205,7 +213,10 @@ struct App::State
   LobbyService lobbies;
   std::unordered_map<std::string, User> users;
   std::unordered_map<std::string, FailWindow> auth_fails;
-  std::unordered_map<std::string, std::weak_ptr<WsSession>> sockets;
+  std::unordered_map<std::string, std::weak_ptr<LobbyLink>> sockets;
+  std::unordered_map<std::string, WtTicket> wt_tickets;
+  std::unique_ptr<WtServer> wt;
+  std::uint16_t wt_port_ = 0;
   std::unordered_map<std::string, AllocMeta> allocs;
   std::unordered_map<std::string, int> game_channels;
   std::unordered_map<std::string, int> lobby_channels;
@@ -255,8 +266,99 @@ struct App::State
     relay_cfg.max_concurrent = cfg.max_concurrent_channels;
     relay_cfg.max_packet = cfg.max_udp_packet_bytes;
     relay_cfg.tcp_enabled = cfg.relay_tcp_enabled;
+    relay_cfg.wt_enabled = cfg.relay_wt_enabled && wt != nullptr;
     relay->configure(relay_cfg);
   }
+
+  // nullopt when no rule applies: cors_origins is empty or the request has no
+  // Origin header, as native clients send none.
+  std::optional<bool> origin_allowed(std::string_view origin) const
+  {
+    const auto& list = catalog.system().cors_origins;
+    if( origin.empty() || list.find_first_not_of(" \t\r\n,") == std::string::npos )
+    {
+      return std::nullopt;
+    }
+    std::size_t start = 0;
+    while( start < list.size() )
+    {
+      auto end = list.find_first_of(" \t\r\n,", start);
+      if( end == std::string::npos )
+      {
+        end = list.size();
+      }
+      const std::string_view entry(list.data() + start, end - start);
+      if( entry == "*" || entry == origin )
+      {
+        return true;
+      }
+      start = end + 1;
+    }
+    return false;
+  }
+
+  std::shared_ptr<LobbyLink> link_of(const std::string& user_id) const
+  {
+    const auto it = sockets.find(user_id);
+    return it == sockets.end() ? nullptr : it->second.lock();
+  }
+
+  std::optional<std::string> take_ticket(const std::string& ticket)
+  {
+    const auto it = wt_tickets.find(ticket);
+    if( it == wt_tickets.end() )
+    {
+      return std::nullopt;
+    }
+    auto user_id = std::move(it->second.user_id);
+    const bool live = Clock::now() < it->second.expires;
+    wt_tickets.erase(it);
+    if( !live )
+    {
+      return std::nullopt;
+    }
+    return user_id;
+  }
+
+  std::string wt_url(const std::string& lobby_id, const std::string& ticket) const
+  {
+    const auto& cfg = catalog.system();
+    std::string_view authority = cfg.public_url;
+    if( const auto scheme = authority.find("://"); scheme != std::string_view::npos )
+    {
+      authority.remove_prefix(scheme + 3);
+    }
+    authority = authority.substr(0, authority.find('/'));
+    std::string host;
+    if( authority.starts_with("[") )
+    {
+      host = std::string(authority.substr(0, authority.find(']') + 1));
+    }
+    else
+    {
+      host = std::string(authority.substr(0, authority.find(':')));
+    }
+    if( host.empty() )
+    {
+      host = cfg.public_host;
+      if( host.find(':') != std::string::npos )
+      {
+        host = "[" + host + "]";
+      }
+    }
+    if( wt_port_ != 443 )
+    {
+      host += ":" + std::to_string(wt_port_);
+    }
+    return "https://" + host + "/wt/v1/lobbies/" + lobby_id + "?ticket=" + ticket;
+  }
+
+  std::optional<Error> wt_connect(const WtRequest& request,
+                                  const std::shared_ptr<WtSession>& session);
+  void wt_message(const std::shared_ptr<WtSession>& session, const json& message);
+  void wt_datagram(const std::shared_ptr<WtSession>& session,
+                   std::span<const std::uint8_t> datagram);
+  void wt_ended(const std::shared_ptr<WtSession>& session, WtSession::Ended how);
 
   void wire()
   {
@@ -348,6 +450,7 @@ struct App::State
             {"region", self},
             {"regions", regions},
             {"compression", compression},
+            {"webtransport", {{"enabled", wt != nullptr}}},
             {"limits", {{"max_message_bytes", cfg.max_message_bytes}}}};
   }
 
@@ -378,6 +481,7 @@ struct App::State
     int status = 200;
     json body = json::object();
     bool gzip = true;
+    bool preflight = false;
   };
   using Respond = std::function<void(HttpOut)>;
 
@@ -401,6 +505,11 @@ struct App::State
           const auto now = Clock::now();
           lobbies.tick(now);
           relay->tick(now);
+          std::erase_if(wt_tickets,
+                        [now](const auto& entry)
+                        {
+                          return now >= entry.second.expires;
+                        });
           if( now - last_prune > std::chrono::hours(1) )
           {
             last_prune = now;
@@ -502,7 +611,7 @@ struct App::State
   }
 };
 
-class App::State::WsSession : public std::enable_shared_from_this<WsSession>
+class App::State::WsSession : public LobbyLink, public std::enable_shared_from_this<WsSession>
 {
 public:
   WsSession(State& state, beast::ssl_stream<beast::tcp_stream> stream,
@@ -559,7 +668,7 @@ public:
                                                 }));
   }
 
-  void send(const json& message, bool then_close)
+  void send(const json& message, bool then_close) override
   {
     auto text = std::make_shared<std::string>(message.dump());
     const auto cap =
@@ -578,7 +687,13 @@ public:
     pump();
   }
 
-  void probe(std::chrono::milliseconds timeout, std::function<void(std::optional<int>)> cb)
+  std::string_view transport() const override
+  {
+    return "websocket";
+  }
+
+  void probe(std::chrono::milliseconds timeout,
+             std::function<void(std::optional<int>)> cb) override
   {
     if( probing_ )
     {
@@ -622,6 +737,13 @@ private:
 
   void on_open()
   {
+    if( state_.link_of(user_id_) )
+    {
+      send(frame_error(json::object(),
+                       Error{ErrorCode::AlreadyInLobby, "already connected", std::nullopt}),
+           true);
+      return;
+    }
     state_.sockets[user_id_] = weak_from_this();
     auto snapshot = state_.lobbies.complete_connect(user_id_, lobby_id_, Clock::now());
     if( !snapshot )
@@ -716,8 +838,27 @@ private:
                                                [self = shared_from_this()](beast::error_code)
                                                {
                                                  self->departed_ = true;
-                                                 self->state_.sockets.erase(self->user_id_);
+                                                 self->forget();
                                                }));
+  }
+
+  bool registered() const
+  {
+    const auto it = state_.sockets.find(user_id_);
+    if( it == state_.sockets.end() )
+    {
+      return false;
+    }
+    const auto current = it->second.lock();
+    return !current || current.get() == static_cast<const LobbyLink*>(this);
+  }
+
+  void forget()
+  {
+    if( registered() )
+    {
+      state_.sockets.erase(user_id_);
+    }
   }
 
   void depart()
@@ -727,8 +868,11 @@ private:
       return;
     }
     departed_ = true;
-    state_.lobbies.leave(user_id_, Clock::now());
-    state_.sockets.erase(user_id_);
+    if( registered() )
+    {
+      state_.lobbies.leave(user_id_, Clock::now());
+      state_.sockets.erase(user_id_);
+    }
     close_after_ = true;
     if( !writing_ )
     {
@@ -907,6 +1051,23 @@ private:
                 return;
               }
               self->req_ = self->parser_->release();
+              const auto cors = self->state_.origin_allowed(self->req_[http::field::origin]);
+              if( cors == false )
+              {
+                self->write_out(App::State::HttpOut{
+                    403,
+                    error_body(Error{ErrorCode::Forbidden, "origin not allowed", std::nullopt}),
+                    true});
+                return;
+              }
+              if( cors == true && self->req_.method() == http::verb::options )
+              {
+                App::State::HttpOut out;
+                out.status = 204;
+                out.preflight = true;
+                self->write_out(std::move(out));
+                return;
+              }
               if( websocket::is_upgrade(self->req_) )
               {
                 self->upgrade();
@@ -930,14 +1091,30 @@ private:
 
   void write_out(App::State::HttpOut out)
   {
-    std::string body = out.body.dump();
+    std::string body = out.preflight ? std::string{} : out.body.dump();
     res_.emplace();
     res_->result(out.status);
     res_->version(req_.version());
-    res_->set(http::field::content_type, "application/json; charset=utf-8");
+    if( !out.preflight )
+    {
+      res_->set(http::field::content_type, "application/json; charset=utf-8");
+    }
     res_->keep_alive(req_.keep_alive());
     const auto& cfg = state_.catalog.system();
-    if( out.gzip && cfg.http_gzip && accepts_gzip(req_) &&
+    std::string vary;
+    const auto origin = req_[http::field::origin];
+    if( state_.origin_allowed(origin) == true )
+    {
+      res_->set(http::field::access_control_allow_origin, origin);
+      vary = "Origin";
+      if( out.preflight )
+      {
+        res_->set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+        res_->set(http::field::access_control_allow_headers, "Authorization, Content-Type");
+        res_->set(http::field::access_control_max_age, "600");
+      }
+    }
+    if( !out.preflight && out.gzip && cfg.http_gzip && accepts_gzip(req_) &&
         static_cast<int>(body.size()) >= cfg.http_gzip_min_bytes )
     {
       auto compressed = gzip_compress(body);
@@ -945,8 +1122,12 @@ private:
       {
         body = std::move(compressed);
         res_->set(http::field::content_encoding, "gzip");
-        res_->set(http::field::vary, "Accept-Encoding");
+        vary = vary.empty() ? "Accept-Encoding" : vary + ", Accept-Encoding";
       }
+    }
+    if( !vary.empty() )
+    {
+      res_->set(http::field::vary, vary);
     }
     res_->body() = std::move(body);
     res_->prepare_payload();
@@ -1004,6 +1185,13 @@ private:
       const char* message = owned ? "already in a lobby" : "no join reservation";
       write_out(App::State::HttpOut{http_status(code),
                                     error_body(Error{code, message, std::nullopt}), true});
+      return;
+    }
+    if( state_.link_of(user->user_id) )
+    {
+      write_out(App::State::HttpOut{
+          http_status(ErrorCode::AlreadyInLobby),
+          error_body(Error{ErrorCode::AlreadyInLobby, "already connected", std::nullopt}), true});
       return;
     }
     handed_off_ = true;
@@ -1263,12 +1451,7 @@ void App::State::handle_http(const http::request<http::string_body>& req, const 
         respond(HttpOut{200, payload, true});
         return;
       }
-      auto socket = sockets.find(*host);
-      std::shared_ptr<WsSession> session;
-      if( socket != sockets.end() )
-      {
-        session = socket->second.lock();
-      }
+      const auto session = link_of(*host);
       if( !session )
       {
         respond(HttpOut{200, payload, true});
@@ -1306,6 +1489,30 @@ void App::State::handle_http(const http::request<http::string_body>& req, const 
       respond(HttpOut{200, *joined, true});
       return;
     }
+  }
+  if( method == http::verb::post && target.path == "/api/v1/wt-ticket" )
+  {
+    if( !wt )
+    {
+      finish_error(Error{ErrorCode::NotFound, "webtransport is disabled", std::nullopt});
+      return;
+    }
+    const auto lobby_id = lobbies.lobby_of(actor.user_id);
+    if( !lobby_id )
+    {
+      finish_error(Error{ErrorCode::NotMember, "no join reservation", std::nullopt});
+      return;
+    }
+    const int ttl = std::max(1, catalog.system().wt_ticket_sec);
+    auto ticket = random_hex(16);
+    wt_tickets[ticket] = WtTicket{actor.user_id, now + std::chrono::seconds(ttl)};
+    respond(HttpOut{200,
+                    {{"ticket", ticket},
+                     {"expires_in", ttl},
+                     {"lobby_id", *lobby_id},
+                     {"url", wt_url(*lobby_id, ticket)}},
+                    true});
+    return;
   }
   if( method == http::verb::post && target.path == "/api/v1/lobbies" )
   {
@@ -1614,6 +1821,35 @@ void App::State::handle_ws_message(const std::string& user_id, const std::string
         }
         return;
       }
+      if( protocol == "wt" )
+      {
+        std::optional<Error> refused;
+        if( !wt || !catalog.system().relay_wt_enabled || !game->limits.allow_wt )
+        {
+          refused = Error{ErrorCode::Limit, "wt relay is disabled", std::nullopt};
+        }
+        else
+        {
+          const auto link_a = link_of(user_a);
+          const auto link_b = link_of(user_b);
+          if( !link_a || !link_b || link_a->transport() != "webtransport" ||
+              link_b->transport() != "webtransport" )
+          {
+            refused = Error{ErrorCode::BadRequest,
+                            "a wt channel needs both users connected over WebTransport",
+                            std::nullopt};
+          }
+        }
+        if( refused )
+        {
+          fail(*refused);
+          for( const auto& id : created )
+          {
+            relay->release(id, now);
+          }
+          return;
+        }
+      }
       auto allowed = check_lifetime(lifetime, game->limits.max_channel_lifetime_sec,
                                     catalog.system().max_channel_lifetime_sec);
       if( !allowed )
@@ -1650,23 +1886,37 @@ void App::State::handle_ws_message(const std::string& user_id, const std::string
       allocs[info->id] = AllocMeta{lobby_id, game->id};
       ++game_channels[game->id];
       ++lobby_channels[lobby_id];
+      const bool over_wt = info->protocol == "wt";
+      auto side_json = [&](const SideInfo& side)
+      {
+        json out = {{"user_id", side.user_id}};
+        if( !over_wt )
+        {
+          out["port"] = side.port;
+        }
+        return out;
+      };
       allocations.push_back({{"id", info->id},
                              {"expires_at_ms", info->expires_at_ms},
                              {"protocol", info->protocol},
-                             {"a", {{"user_id", info->a.user_id}, {"port", info->a.port}}},
-                             {"b", {{"user_id", info->b.user_id}, {"port", info->b.port}}}});
+                             {"a", side_json(info->a)},
+                             {"b", side_json(info->b)}});
       auto event_for = [&](const SideInfo& self, const SideInfo& peer)
       {
-        return json{{"op", "event"},
-                    {"event", "relay_allocated"},
-                    {"lobby_id", lobby_id},
-                    {"channel_id", info->id},
-                    {"protocol", info->protocol},
-                    {"peer_user_id", peer.user_id},
-                    {"host", self.host},
-                    {"port", self.port},
-                    {"token", self.token_hex},
-                    {"expires_at_ms", info->expires_at_ms}};
+        json event = {{"op", "event"},
+                      {"event", "relay_allocated"},
+                      {"lobby_id", lobby_id},
+                      {"channel_id", info->id},
+                      {"protocol", info->protocol},
+                      {"peer_user_id", peer.user_id},
+                      {"expires_at_ms", info->expires_at_ms}};
+        if( !over_wt )
+        {
+          event["host"] = self.host;
+          event["port"] = self.port;
+          event["token"] = self.token_hex;
+        }
+        return event;
       };
       send_to(info->a.user_id, event_for(info->a, info->b), false);
       send_to(info->b.user_id, event_for(info->b, info->a), false);
@@ -1678,6 +1928,102 @@ void App::State::handle_ws_message(const std::string& user_id, const std::string
     return;
   }
   fail(Error{ErrorCode::BadRequest, "unknown op", std::nullopt});
+}
+
+std::optional<Error> App::State::wt_connect(const WtRequest& request,
+                                            const std::shared_ptr<WtSession>& session)
+{
+  if( origin_allowed(request.origin) == false )
+  {
+    return Error{ErrorCode::Forbidden, "origin not allowed", std::nullopt};
+  }
+  constexpr std::string_view prefix = "/wt/v1/lobbies/";
+  if( !request.path.starts_with(prefix) || request.path.size() == prefix.size() )
+  {
+    return Error{ErrorCode::NotFound, "not found", std::nullopt};
+  }
+  const auto lobby_id = url_decode(request.path.substr(prefix.size()));
+  const auto ticket = query_value(request.query, "ticket");
+  if( has_query(request.query, "access_token") || has_query(request.query, "token") ||
+      ticket.find('.') != std::string::npos )
+  {
+    return Error{ErrorCode::Unauthorized, "use a ticket from /api/v1/wt-ticket", std::nullopt};
+  }
+  const auto user_id = take_ticket(ticket);
+  if( !user_id || !users.contains(*user_id) )
+  {
+    return Error{ErrorCode::Unauthorized, "unknown or expired ticket", std::nullopt};
+  }
+  const auto owned = lobbies.lobby_of(*user_id);
+  if( !owned || *owned != lobby_id )
+  {
+    return owned ? Error{ErrorCode::AlreadyInLobby, "already in a lobby", std::nullopt}
+                 : Error{ErrorCode::NotMember, "no join reservation", std::nullopt};
+  }
+  if( link_of(*user_id) )
+  {
+    return Error{ErrorCode::AlreadyInLobby, "already connected", std::nullopt};
+  }
+  session->user_id = *user_id;
+  session->lobby_id = lobby_id;
+  sockets[*user_id] = session;
+  auto snapshot = lobbies.complete_connect(*user_id, lobby_id, Clock::now(), "webtransport");
+  if( !snapshot )
+  {
+    sockets.erase(*user_id);
+    return snapshot.error();
+  }
+  session->send(*snapshot, false);
+  return std::nullopt;
+}
+
+void App::State::wt_message(const std::shared_ptr<WtSession>& session, const json& message)
+{
+  if( !message.is_object() || !message.contains("op") )
+  {
+    session->send(frame_error(json::object(),
+                              Error{ErrorCode::BadRequest, "expected an op object", std::nullopt}),
+                  false);
+    return;
+  }
+  handle_ws_message(session->user_id, session->lobby_id, message,
+                    [session](const json& outbound, bool close_after)
+                    {
+                      session->send(outbound, close_after);
+                    });
+}
+
+void App::State::wt_datagram(const std::shared_ptr<WtSession>& session,
+                             std::span<const std::uint8_t> datagram)
+{
+  if( datagram.size() < 16 )
+  {
+    return;
+  }
+  const auto peer = relay->forward_wt(datagram.first<16>(), session->user_id,
+                                      datagram.size() - 16, Clock::now());
+  if( !peer )
+  {
+    return;
+  }
+  if( const auto link = link_of(*peer) )
+  {
+    link->send_datagram(datagram);
+  }
+}
+
+void App::State::wt_ended(const std::shared_ptr<WtSession>& session, WtSession::Ended how)
+{
+  const auto it = sockets.find(session->user_id);
+  if( it == sockets.end() || it->second.lock() != std::static_pointer_cast<LobbyLink>(session) )
+  {
+    return;
+  }
+  if( how == WtSession::Ended::Peer )
+  {
+    lobbies.leave(session->user_id, Clock::now());
+  }
+  sockets.erase(session->user_id);
 }
 
 namespace
@@ -1736,6 +2082,53 @@ void App::start()
   {
     throw std::runtime_error("failed to set the minimum TLS version");
   }
+  if( cfg.relay_wt_enabled )
+  {
+    auto* state = state_.get();
+    WtHandlers handlers;
+    handlers.admit = [state]
+    {
+      if( state->connections.load() >= std::max(1, state->catalog.system().max_connections) )
+      {
+        return false;
+      }
+      state->connections.fetch_add(1);
+      return true;
+    };
+    handlers.release = [state]
+    {
+      state->connections.fetch_sub(1);
+    };
+    handlers.connect = [state](const WtRequest& request, const std::shared_ptr<WtSession>& session)
+    {
+      return state->wt_connect(request, session);
+    };
+    handlers.message = [state](const std::shared_ptr<WtSession>& session, const json& message)
+    {
+      state->wt_message(session, message);
+    };
+    handlers.datagram = [state](const std::shared_ptr<WtSession>& session,
+                                std::span<const std::uint8_t> datagram)
+    {
+      state->wt_datagram(session, datagram);
+    };
+    handlers.ended = [state](const std::shared_ptr<WtSession>& session, WtSession::Ended how)
+    {
+      state->wt_ended(session, how);
+    };
+    WtConfig wt_cfg;
+    wt_cfg.listen = cfg.wt_listen;
+    wt_cfg.cert_file = cfg.tls_cert;
+    wt_cfg.key_file = cfg.tls_key;
+    wt_cfg.idle_timeout = std::chrono::seconds(
+        std::max(5, cfg.host_heartbeat_interval_sec * cfg.host_heartbeat_misses) * 2);
+    wt_cfg.max_message_bytes = static_cast<std::size_t>(std::max(1024, cfg.max_message_bytes));
+    wt_cfg.max_outbound_bytes =
+        static_cast<std::size_t>(std::max(1024, cfg.max_outbound_queue_bytes));
+    state_->wt = std::make_unique<WtServer>(state_->ioc, state_->strand, std::move(handlers));
+    state_->wt->start(wt_cfg);
+    state_->wt_port_ = state_->wt->port();
+  }
   state_->apply_limits();
   state_->wire();
   const auto https = endpoint_from(cfg.listen);
@@ -1755,7 +2148,8 @@ void App::start()
   state_->store->prune_logs(cutoff);
   write_log(state_->store.get(), LogLevel::Info, "server",
             "listening on " + std::to_string(state_->https_port_) + " stats " +
-                std::to_string(state_->stats_port_));
+                std::to_string(state_->stats_port_) +
+                (state_->wt ? " webtransport " + std::to_string(state_->wt_port_) : ""));
   state_->do_https_accept();
   state_->do_stats_accept();
   state_->schedule_tick();
@@ -1817,6 +2211,11 @@ std::uint16_t App::https_port() const
 std::uint16_t App::stats_port() const
 {
   return state_->stats_port_;
+}
+
+std::uint16_t App::wt_port() const
+{
+  return state_->wt_port_;
 }
 
 } // namespace matchmaker

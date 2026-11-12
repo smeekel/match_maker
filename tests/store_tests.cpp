@@ -23,16 +23,22 @@ TEST_CASE("sqlite store migrates config, games, and logs")
     CHECK(config.at("jwt_secret") == "change-me");
     CHECK(config.at("max_threads") == "1");
     CHECK(config.find("threads") == config.end());
+    CHECK(config.at("relay_wt_enabled") == "0");
+    CHECK(config.at("wt_listen") == "0.0.0.0:443");
+    CHECK(config.at("cors_origins").empty());
+    CHECK(config.at("wt_ticket_sec") == "30");
     CHECK(store->load_games().empty());
     CHECK(store->load_regions().size() == 1);
 
     auto game = sample_game();
     store->upsert_game(game);
     game.name = "Renamed";
+    game.limits.allow_wt = true;
     store->upsert_game(game);
     const auto games = store->load_games();
     REQUIRE(games.size() == 1);
     CHECK(games[0].name == "Renamed");
+    CHECK(games[0].limits.allow_wt);
     CHECK(games[0].token_hash == sha256_hex("secret"));
     CHECK(games[0].token_hash != "secret");
 

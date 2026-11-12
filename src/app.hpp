@@ -27,6 +27,8 @@ public:
   void install_signals();
   std::uint16_t https_port() const;
   std::uint16_t stats_port() const;
+  // UDP port of the WebTransport listener, or 0 when relay_wt_enabled is off.
+  std::uint16_t wt_port() const;
 
 private:
   struct State;
