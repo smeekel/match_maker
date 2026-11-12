@@ -4,6 +4,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <unordered_map>
 
 using namespace matchmaker;
@@ -18,6 +19,7 @@ struct World
   std::unordered_map<std::string, GameRecord> games;
   LobbyService lobbies;
   std::vector<nlohmann::json> events;
+  std::vector<std::vector<std::string>> recipients;
 
   World()
   {
@@ -35,9 +37,10 @@ struct World
           return it == games.end() ? nullptr : &it->second;
         });
     lobbies.set_emit(
-        [this](const nlohmann::json& event, const std::vector<std::string>&)
+        [this](const nlohmann::json& event, const std::vector<std::string>& to)
         {
           events.push_back(event);
+          recipients.push_back(to);
         });
     lobbies.set_system_player_cap(64);
     lobbies.set_system_password_cap(64);
@@ -52,6 +55,24 @@ struct World
 std::string lobby_id_of(const nlohmann::json& body)
 {
   return body.at("lobby_id").get<std::string>();
+}
+
+// Recipients of the last event named |name|, or nullopt when none was emitted.
+std::optional<std::vector<std::string>> sent_to(const World& world, const std::string& name)
+{
+  for( std::size_t i = world.events.size(); i-- > 0; )
+  {
+    if( world.events[i].value("event", "") == name )
+    {
+      return world.recipients[i];
+    }
+  }
+  return std::nullopt;
+}
+
+bool includes(const std::vector<std::string>& ids, const std::string& id)
+{
+  return std::find(ids.begin(), ids.end(), id) != ids.end();
 }
 
 } // namespace
@@ -218,4 +239,97 @@ TEST_CASE("host leave, heartbeat, admission, and game isolation")
   auto foreign_list = world.lobbies.list(other_id, "", 50);
   REQUIRE(foreign_list);
   CHECK((*foreign_list)["lobbies"].empty());
+}
+
+TEST_CASE("operator controls reach the host and never expose the password")
+{
+  World world;
+  const auto now = Clock::now();
+  auto created = world.lobbies.create(world.user("host"), now);
+  REQUIRE(created);
+  const auto id = lobby_id_of(*created);
+  REQUIRE(world.lobbies.complete_connect("host", id, now));
+
+  auto listed = world.lobbies.admin_list();
+  REQUIRE(listed.size() == 1);
+  CHECK(listed[0]["phase"] == "closed");
+  CHECK(listed[0]["game_id"] == sample_game().id);
+  CHECK(listed[0]["listed"] == false);
+
+  REQUIRE(world.lobbies.admin_set_phase(id, "open"));
+  auto phase_to = sent_to(world, "lobby_phase_changed");
+  REQUIRE(phase_to);
+  CHECK(includes(*phase_to, "host"));
+  auto bad_phase = world.lobbies.admin_set_phase(id, "nope");
+  REQUIRE_FALSE(bad_phase);
+  CHECK(bad_phase.error().code == ErrorCode::BadRequest);
+
+  REQUIRE(world.lobbies.begin_join(world.user("guest"), id, std::nullopt, now));
+  REQUIRE(world.lobbies.complete_connect("guest", id, now));
+  auto below = world.lobbies.admin_set_slots(id, 1);
+  REQUIRE_FALSE(below);
+  CHECK(below.error().code == ErrorCode::BadRequest);
+  REQUIRE(world.lobbies.admin_set_slots(id, 3));
+  REQUIRE(world.lobbies.admin_set_late_join(id, true));
+  REQUIRE(world.lobbies.admin_set_short_code(id, std::string("ops1")));
+  REQUIRE(world.lobbies.admin_set_metadata(id, {{"map", "dust"}}));
+
+  REQUIRE(world.lobbies.admin_set_password(id, std::string("hidden-room-pw")));
+  auto lock_to = sent_to(world, "lock_changed");
+  REQUIRE(lock_to);
+  CHECK(includes(*lock_to, "host"));
+  CHECK(includes(*lock_to, "guest"));
+  auto view = world.lobbies.admin_view(id);
+  REQUIRE(view);
+  CHECK((*view)["locked"] == true);
+  CHECK((*view)["short_code"] == "OPS1");
+  CHECK((*view)["metadata"]["map"] == "dust");
+  CHECK_FALSE(view->contains("password"));
+  CHECK(view->dump().find("hidden-room-pw") == std::string::npos);
+  CHECK(world.lobbies.admin_list().dump().find("hidden-room-pw") == std::string::npos);
+  REQUIRE((*view)["members"].size() == 2);
+  CHECK((*view)["members"][0]["host"] == true);
+
+  auto stranger = world.lobbies.admin_kick(id, "nobody", now);
+  REQUIRE_FALSE(stranger);
+  CHECK(stranger.error().code == ErrorCode::UnknownUser);
+  REQUIRE(world.lobbies.admin_kick(id, "guest", now));
+  auto kicked_to = sent_to(world, "kicked");
+  REQUIRE(kicked_to);
+  CHECK(*kicked_to == std::vector<std::string>{"guest"});
+  auto left_to = sent_to(world, "user_left");
+  REQUIRE(left_to);
+  CHECK(includes(*left_to, "host"));
+  CHECK_FALSE(world.lobbies.user_in_lobby("guest"));
+
+  REQUIRE(world.lobbies.admin_close(id));
+  auto closed_to = sent_to(world, "lobby_closed");
+  REQUIRE(closed_to);
+  CHECK(includes(*closed_to, "host"));
+  CHECK(world.events.back()["reason"] == "admin");
+  CHECK_FALSE(world.lobbies.admin_view(id));
+  CHECK_FALSE(world.lobbies.user_in_lobby("host"));
+  auto gone = world.lobbies.admin_close(id);
+  REQUIRE_FALSE(gone);
+  CHECK(gone.error().code == ErrorCode::NotFound);
+}
+
+TEST_CASE("host controls still skip the acting host")
+{
+  World world;
+  const auto now = Clock::now();
+  auto created = world.lobbies.create(world.user("host"), now);
+  REQUIRE(created);
+  const auto id = lobby_id_of(*created);
+  REQUIRE(world.lobbies.complete_connect("host", id, now));
+  REQUIRE(world.lobbies.set_phase(world.user("host"), id, "open"));
+  REQUIRE(world.lobbies.begin_join(world.user("guest"), id, std::nullopt, now));
+  REQUIRE(world.lobbies.complete_connect("guest", id, now));
+  REQUIRE(world.lobbies.set_slots(world.user("host"), id, 3));
+  auto slots_to = sent_to(world, "slots_changed");
+  REQUIRE(slots_to);
+  CHECK(*slots_to == std::vector<std::string>{"guest"});
+  auto not_host = world.lobbies.set_slots(world.user("guest"), id, 2);
+  REQUIRE_FALSE(not_host);
+  CHECK(not_host.error().code == ErrorCode::NotHost);
 }

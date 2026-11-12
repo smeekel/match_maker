@@ -65,14 +65,68 @@ public:
                                           Time now, const std::string& transport = "websocket");
   Status leave(const std::string& user_id, Time now);
   Status close_lobby(const Actor& actor, Time now);
-  Status set_phase(const Actor& actor, const std::string& lobby_id, const std::string& phase);
-  Status set_slots(const Actor& actor, const std::string& lobby_id, int slots);
-  Status set_late_join(const Actor& actor, const std::string& lobby_id, bool allowed);
+  Status set_phase(const Actor& actor, const std::string& lobby_id, const std::string& phase)
+  {
+    return set_phase_as(&actor, lobby_id, phase);
+  }
+  Status set_slots(const Actor& actor, const std::string& lobby_id, int slots)
+  {
+    return set_slots_as(&actor, lobby_id, slots);
+  }
+  Status set_late_join(const Actor& actor, const std::string& lobby_id, bool allowed)
+  {
+    return set_late_join_as(&actor, lobby_id, allowed);
+  }
   Status set_password(const Actor& actor, const std::string& lobby_id,
-                      const std::optional<std::string>& password);
+                      const std::optional<std::string>& password)
+  {
+    return set_password_as(&actor, lobby_id, password);
+  }
   Status set_short_code(const Actor& actor, const std::string& lobby_id,
-                        const std::optional<std::string>& code);
-  Status set_metadata(const Actor& actor, const std::string& lobby_id, const nlohmann::json& patch);
+                        const std::optional<std::string>& code)
+  {
+    return set_short_code_as(&actor, lobby_id, code);
+  }
+  Status set_metadata(const Actor& actor, const std::string& lobby_id, const nlohmann::json& patch)
+  {
+    return set_metadata_as(&actor, lobby_id, patch);
+  }
+
+  // Operator versions of the host controls. They skip the host check, apply the same
+  // validation, and send the resulting event to every connected member, host included.
+  Status admin_set_phase(const std::string& lobby_id, const std::string& phase)
+  {
+    return set_phase_as(nullptr, lobby_id, phase);
+  }
+  Status admin_set_slots(const std::string& lobby_id, int slots)
+  {
+    return set_slots_as(nullptr, lobby_id, slots);
+  }
+  Status admin_set_late_join(const std::string& lobby_id, bool allowed)
+  {
+    return set_late_join_as(nullptr, lobby_id, allowed);
+  }
+  Status admin_set_password(const std::string& lobby_id,
+                            const std::optional<std::string>& password)
+  {
+    return set_password_as(nullptr, lobby_id, password);
+  }
+  Status admin_set_short_code(const std::string& lobby_id, const std::optional<std::string>& code)
+  {
+    return set_short_code_as(nullptr, lobby_id, code);
+  }
+  Status admin_set_metadata(const std::string& lobby_id, const nlohmann::json& patch)
+  {
+    return set_metadata_as(nullptr, lobby_id, patch);
+  }
+  // Removes |user_id| from |lobby_id| as if they left. The removed user receives a `kicked`
+  // event, which closes their socket.
+  Status admin_kick(const std::string& lobby_id, const std::string& user_id, Time now);
+  Status admin_close(const std::string& lobby_id);
+  // Every live lobby across games, closed ones included. Never includes the password.
+  nlohmann::json admin_list() const;
+  // admin_list's row plus members and their reservation state.
+  Result<nlohmann::json> admin_view(const std::string& lobby_id) const;
   Status set_alias(const Actor& actor, const std::string& lobby_id, const std::string& alias);
   Status set_ready(const Actor& actor, const std::string& lobby_id, bool ready);
   Status chat(const Actor& actor, const std::string& lobby_id, const std::string& text);
@@ -143,6 +197,19 @@ private:
   void forget_user(const std::string& user_id, const std::string& lobby_id);
   Status require_host(const Actor& actor, Lobby& lobby);
   Status require_member(const Actor& actor, Lobby& lobby);
+  // |actor| is null for an operator, which skips the host check.
+  Result<Lobby*> controlled(const Actor* actor, const std::string& lobby_id);
+  std::vector<std::string> audience(const Lobby& lobby, const Actor* actor) const;
+  nlohmann::json admin_row(const Lobby& lobby) const;
+  Status set_phase_as(const Actor* actor, const std::string& lobby_id, const std::string& phase);
+  Status set_slots_as(const Actor* actor, const std::string& lobby_id, int slots);
+  Status set_late_join_as(const Actor* actor, const std::string& lobby_id, bool allowed);
+  Status set_password_as(const Actor* actor, const std::string& lobby_id,
+                         const std::optional<std::string>& password);
+  Status set_short_code_as(const Actor* actor, const std::string& lobby_id,
+                           const std::optional<std::string>& code);
+  Status set_metadata_as(const Actor* actor, const std::string& lobby_id,
+                         const nlohmann::json& patch);
 
   Emit emit_;
   RulesFn rules_;

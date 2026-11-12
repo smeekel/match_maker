@@ -22,7 +22,7 @@ JSON in, JSON out. Authenticated routes use `Authorization: Bearer <jwt>`. A tok
 {"error":"<code>","message":"..."}
 ```
 
-Status codes: 400, 401, 403, 404, 409, 413, 429. Codes include `unauthorized`, `unknown_game`, `not_host`, `not_member`, `lobby_not_open`, `late_join_disabled`, `full`, `bad_password`, `invalid_code`, `code_taken`, `limit`, `lifetime_exceeds_limit` (with `max_lifetime_sec`), `too_large`, `unknown_user`, `already_in_lobby`, `not_found`, `forbidden`.
+Status codes: 400, 401, 403, 404, 409, 413, 429. Codes include `unauthorized`, `unknown_game`, `not_host`, `not_member`, `lobby_not_open`, `late_join_disabled`, `full`, `bad_password`, `invalid_code`, `code_taken`, `limit`, `lifetime_exceeds_limit` (with `max_lifetime_sec`), `too_large`, `unknown_user`, `already_in_lobby`, `not_found`, `forbidden`, `conflict` (admin API only).
 
 When `Accept-Encoding` includes `gzip` and the body is at least `http_gzip_min_bytes`, the response is gzip and sets `Content-Encoding: gzip` and `Vary: Accept-Encoding`.
 
@@ -154,7 +154,9 @@ Requests may include `id`. `ok` and `error` echo it.
 
 Other events, while the socket is open: `host_changed`, `lobby_metadata`, `lobby_phase_changed`, `slots_changed`, `late_join_changed`, `lock_changed`, `short_code_changed`, `alias_changed`, `ready_changed`, `chat`, `custom`, `relay_released`, `relay_expired`. Events are not echoed to the actor, except `lobby_closed`, which goes to every connected member and then the socket closes.
 
-Leaving is any of: `leave`, socket close, missed WebSocket pong, `close_lobby`, host-leave teardown, or the last member departing. The server removes the member, emits `user_left` or `lobby_closed`, closes that WebSocket, and frees the one-lobby slot.
+An operator can remove a member through the [admin API](#admin). That member receives `{"op":"event","event":"kicked","lobby_id":"...","user_id":"..."}`, then the socket closes; the others see `user_left`. An operator close sends `lobby_closed` with `reason` `admin`.
+
+Leaving is any of: `leave`, socket close, missed WebSocket pong, `close_lobby`, host-leave teardown, an operator kick or close, or the last member departing. The server removes the member, emits `user_left` or `lobby_closed`, closes that WebSocket, and frees the one-lobby slot.
 
 If `promote_host_on_leave` is false, host leave ends the lobby. If it is true, the earliest remaining member becomes host. The last member always ends the lobby. Ending a lobby releases its relays. Missing the allowed number of host heartbeat intervals uses the same rule.
 
@@ -222,6 +224,57 @@ Bytes then flow as datagrams on each user's WebTransport session (see Datagrams 
 {"connections":0,"lobbies":0,"channels":0,"forwarded_bytes":0,"drops":0,"games":[{"id":"...","lobbies":0}]}
 ```
 
+## Admin
+
+Operator routes on the HTTPS listener. They exist only while config `admin_token` is non-empty; otherwise every `/admin` path is 404. `GET /admin` returns the HTML page with no auth. Every `/admin/api/v1` route needs `Authorization: Bearer <admin_token>`, compared in constant time. A missing or wrong token is 401 and counts toward the per-source `auth_fail_limit`; past the limit the reply is 429. Game JWTs are rejected. `/admin` paths skip `cors_origins` and never send `Access-Control-Allow-Origin`, and responses carry `Cache-Control: no-store` and `X-Frame-Options: DENY`. Writes are `POST` with a JSON body. Errors use the usual body.
+
+Writes to config, games, and regions change SQLite only. `POST /admin/api/v1/reload` applies them, the same as `SIGHUP`, and replies `{"reloaded":true}` or 500 `internal` with the reason; on failure the previous catalog stays.
+
+### Config
+
+`GET /admin/api/v1/config` returns `{"keys":[...]}`, one entry per known key:
+
+```json
+{"key":"admit_sec","kind":"int","apply":"reload","stored":"30","live":"60","pending":true}
+```
+
+`kind` is `int`, `bool`, `string`, `address` (`host:port`), or `secret` (`jwt_secret`, `admin_token`; returned in full to this caller). `apply` is `reload` or `restart`. For a `restart` key, `live` is the value the process started with. `stored` is null for a key with no row. `pending` is `stored != live`.
+
+`POST /admin/api/v1/config` with `{"values":{"admit_sec":"30"}}` validates every value, then stores them all, and returns the same body as `GET`. Unknown keys, integers that do not parse or are negative, booleans outside `1`/`0`/`true`/`false`/`yes`/`no`, an address that is not `host:port`, `tls_min_version` other than `1.2` or `1.3`, and an empty `jwt_secret`, `admin_token`, `tls_cert`, or `tls_key` are 400, and nothing is stored.
+
+### Games and regions
+
+`GET /admin/api/v1/games` returns `{"games":[...]}`. Each row has `id`, `name`, `promote_host_on_leave`, `allow_join_in_progress`, `limits` (stored), `created_at_ms`, `stored`, `live` (the clamped live record, or null before a reload), `lobbies` (live count), and `pending`. A game deleted from the database but still live has `stored: false`. Token hashes are never returned.
+
+`POST /admin/api/v1/games` creates or updates. Fields: `id` (optional; a UUID is generated when omitted; 1 to 64 of `A-Za-z0-9-_.`), `name`, `token` (raw; required for a new game; omitted on update keeps the current hash), `promote_host_on_leave`, `allow_join_in_progress`, and `limits` (the `limits_json` keys, merged over the stored values). Reply `{"game":{...},"created":true|false}`.
+
+`POST /admin/api/v1/games/{id}/delete` is 409 `conflict` while the game has live lobbies, and 404 when no row has that id.
+
+`GET /admin/api/v1/regions` returns `{"regions":[...],"region_id":"..."}` with `id`, `public_url`, `sort_order`, `stored`, `live`, `pending`, and `current`. `POST /admin/api/v1/regions` upserts `{"id","public_url","sort_order"}`. `POST /admin/api/v1/regions/{id}/delete` is 409 `conflict` when `region_id`, live or stored, names that region.
+
+### Lobbies
+
+`GET /admin/api/v1/lobbies` returns `{"lobbies":[...]}`: every live lobby in every game, including `closed` ones. Each row is the public summary plus `game_id`, `listed` (whether the public list shows it), and `channel_count`.
+
+`GET /admin/api/v1/lobbies/{id}` adds `members` (`user_id`, `alias`, `external_id`, `ready`, `connected`, `transport`, `hold` as `host`, `join`, or null, and `host`) and `channels` (`id`, `protocol`, `a` and `b` with `user_id` and `port` when bound, `expires_in_sec`, `closing`). The lock password and relay tokens are never included.
+
+`POST /admin/api/v1/lobbies/{id}` takes one `op`:
+
+| op | fields |
+| --- | --- |
+| `set_phase` | `phase` |
+| `set_slots` | `slots` |
+| `set_late_join` | `allowed` |
+| `set_password` | `password` or null |
+| `set_short_code` | `code` or null |
+| `set_metadata` | `metadata` object; null deletes a key |
+| `kick` | `user_id` |
+| `close` | |
+| `release_channel` | `channel_id` (must belong to this lobby) |
+| `release_channels` | |
+
+The host-control ops apply the same validation as the host and emit the same events, to every connected member including the host. `kick` follows the host-leave rule when the target is the host. The reply is `{"ok":true,"lobby":{...}}` with the admin view, or `lobby: null` when the op ended the lobby.
+
 ## What is stored
 
-SQLite holds config, regions, games, and operational logs. Sessions, lobbies, and forwarders are memory only. Logs record startup, shutdown, config reload, auth failure (game id only), lobby create and close, relay allocate and release, and errors. Chat, ready, custom, alias, and forwarded packets are not logged.
+SQLite holds config, regions, games, and operational logs. Sessions, lobbies, and forwarders are memory only. Logs record startup, shutdown, config reload, auth failure (game id only), lobby create and close, relay allocate and release, admin writes, and errors. Chat, ready, custom, alias, and forwarded packets are not logged.

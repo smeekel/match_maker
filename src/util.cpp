@@ -259,6 +259,20 @@ std::filesystem::path migrations_dir()
 #endif
 }
 
+std::filesystem::path admin_page_path()
+{
+  const auto beside = executable_dir() / "web" / "admin" / "index.html";
+  if( std::filesystem::exists(beside) )
+  {
+    return beside;
+  }
+#ifdef MATCHMAKER_SOURCE_DIR
+  return std::filesystem::path(MATCHMAKER_SOURCE_DIR) / "web" / "admin" / "index.html";
+#else
+  return beside;
+#endif
+}
+
 std::string gzip_compress(std::string_view input)
 {
   z_stream stream{};

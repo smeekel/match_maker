@@ -1,5 +1,6 @@
 #include "app.hpp"
 
+#include "admin.hpp"
 #include "catalog.hpp"
 #include "crypto.hpp"
 #include "jwt.hpp"
@@ -25,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -132,6 +134,23 @@ ParsedTarget parse_target(std::string_view target)
   return {std::string(target.substr(0, pos)), std::string(target.substr(pos + 1))};
 }
 
+// The operator page and API are same-origin only, so cors_origins does not apply to them.
+bool is_admin_path(std::string_view target)
+{
+  const auto path = target.substr(0, target.find('?'));
+  return path == "/admin" || path.starts_with("/admin/");
+}
+
+std::optional<std::string> read_admin_page()
+{
+  std::ifstream in(admin_page_path(), std::ios::binary);
+  if( !in )
+  {
+    return std::nullopt;
+  }
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
 bool accepts_gzip(const http::request<http::string_body>& req)
 {
   const auto value = req[http::field::accept_encoding];
@@ -205,6 +224,7 @@ struct App::State
   std::string database_path;
   std::unique_ptr<Store> store;
   Catalog catalog;
+  SystemConfig startup_config;
   std::string boot_id = uuid_v4();
   int workers = 1;
   boost::asio::io_context ioc;
@@ -482,11 +502,16 @@ struct App::State
     json body = json::object();
     bool gzip = true;
     bool preflight = false;
+    // When set, |text| is sent with this type instead of |body| as JSON.
+    std::string content_type;
+    std::string text;
   };
   using Respond = std::function<void(HttpOut)>;
 
   void handle_http(const http::request<http::string_body>& req, const std::string& remote,
                    Respond respond);
+  void handle_admin(const http::request<http::string_body>& req, const std::string& remote,
+                    const Respond& respond);
   void handle_ws_message(const std::string& user_id, const std::string& lobby_id,
                          const json& message,
                          const std::function<void(const json&, bool close_after)>& send);
@@ -567,17 +592,20 @@ struct App::State
         });
   }
 
-  void reload_catalog()
+  // Returns the error message when the reload failed and the previous catalog stayed.
+  std::optional<std::string> reload_catalog()
   {
     try
     {
       load_catalog();
       apply_limits();
       write_log(store.get(), LogLevel::Info, "config", "reloaded configuration");
+      return std::nullopt;
     }
     catch( const std::exception& ex )
     {
       write_log(store.get(), LogLevel::Error, "config", ex.what());
+      return std::string(ex.what());
     }
   }
 
@@ -937,7 +965,8 @@ private:
 
 void App::State::fanout(const json& event, const std::vector<std::string>& recipients)
 {
-  const bool closing = event.value("event", "") == "lobby_closed";
+  const auto name = event.value("event", "");
+  const bool closing = name == "lobby_closed" || name == "kicked";
   for( const auto& user_id : recipients )
   {
     const auto it = sockets.find(user_id);
@@ -1051,7 +1080,9 @@ private:
                 return;
               }
               self->req_ = self->parser_->release();
-              const auto cors = self->state_.origin_allowed(self->req_[http::field::origin]);
+              const auto cors = is_admin_path(self->req_.target())
+                                    ? std::nullopt
+                                    : self->state_.origin_allowed(self->req_[http::field::origin]);
               if( cors == false )
               {
                 self->write_out(App::State::HttpOut{
@@ -1091,19 +1122,29 @@ private:
 
   void write_out(App::State::HttpOut out)
   {
-    std::string body = out.preflight ? std::string{} : out.body.dump();
+    const bool raw = !out.content_type.empty();
+    std::string body = out.preflight ? std::string{} : raw ? std::move(out.text) : out.body.dump();
     res_.emplace();
     res_->result(out.status);
     res_->version(req_.version());
     if( !out.preflight )
     {
-      res_->set(http::field::content_type, "application/json; charset=utf-8");
+      res_->set(http::field::content_type,
+                raw ? out.content_type : std::string("application/json; charset=utf-8"));
     }
     res_->keep_alive(req_.keep_alive());
     const auto& cfg = state_.catalog.system();
     std::string vary;
     const auto origin = req_[http::field::origin];
-    if( state_.origin_allowed(origin) == true )
+    const bool admin = is_admin_path(req_.target());
+    if( admin )
+    {
+      res_->set(http::field::cache_control, "no-store");
+      res_->set("X-Frame-Options", "DENY");
+      res_->set("X-Content-Type-Options", "nosniff");
+      res_->set("Referrer-Policy", "no-referrer");
+    }
+    if( !admin && state_.origin_allowed(origin) == true )
     {
       res_->set(http::field::access_control_allow_origin, origin);
       vary = "Origin";
@@ -1289,9 +1330,84 @@ void App::State::do_stats_accept()
       });
 }
 
+void App::State::handle_admin(const http::request<http::string_body>& req,
+                              const std::string& remote, const Respond& respond)
+{
+  const auto target = parse_target(std::string(req.target()));
+  auto finish_error = [&](const Error& error, int status = 0)
+  {
+    respond(HttpOut{status == 0 ? http_status(error.code) : status, error_body(error), true});
+  };
+  const Error not_found{ErrorCode::NotFound, "not found", std::nullopt};
+  const auto& token = catalog.system().admin_token;
+  if( token.empty() )
+  {
+    finish_error(not_found);
+    return;
+  }
+  if( target.path == "/admin" || target.path == "/admin/" )
+  {
+    auto page = req.method() == http::verb::get ? read_admin_page() : std::nullopt;
+    if( !page )
+    {
+      finish_error(not_found);
+      return;
+    }
+    HttpOut out;
+    out.content_type = "text/html; charset=utf-8";
+    out.text = std::move(*page);
+    respond(std::move(out));
+    return;
+  }
+  constexpr std::string_view api = "/admin/api/v1";
+  if( !target.path.starts_with(api) )
+  {
+    finish_error(not_found);
+    return;
+  }
+  if( too_many_failures(remote) )
+  {
+    finish_error(Error{ErrorCode::Limit, "too many auth failures", std::nullopt}, 429);
+    return;
+  }
+  constexpr std::string_view prefix = "Bearer ";
+  const std::string header(req[http::field::authorization]);
+  const auto given = header.starts_with(prefix) ? header.substr(prefix.size()) : std::string{};
+  if( given.empty() || !ct_equal(sha256_hex(given), sha256_hex(token)) )
+  {
+    note_failure(remote);
+    write_log(store.get(), LogLevel::Warn, "admin", "admin authentication failed");
+    finish_error(Error{ErrorCode::Unauthorized, "admin token required", std::nullopt});
+    return;
+  }
+  json body = json::object();
+  if( !req.body().empty() )
+  {
+    body = json::parse(req.body(), nullptr, false);
+    if( body.is_discarded() )
+    {
+      finish_error(Error{ErrorCode::BadRequest, "invalid json", std::nullopt});
+      return;
+    }
+  }
+  AdminContext ctx{*store, catalog, startup_config, lobbies, *relay,
+                   [this]
+                   {
+                     return reload_catalog();
+                   }};
+  auto reply = handle_admin_api(ctx, std::string(req.method_string()),
+                                target.path.substr(api.size()), body);
+  respond(HttpOut{reply.status, std::move(reply.body), true});
+}
+
 void App::State::handle_http(const http::request<http::string_body>& req, const std::string& remote,
                              Respond respond)
 {
+  if( is_admin_path(req.target()) )
+  {
+    handle_admin(req, remote, respond);
+    return;
+  }
   const auto target = parse_target(std::string(req.target()));
   const auto method = req.method();
   auto finish_error = [&](const Error& error, int status = 0)
@@ -2064,6 +2180,7 @@ void App::start()
   state_->store = open_sqlite_store(state_->database_path);
   state_->store->migrate();
   state_->load_catalog();
+  state_->startup_config = state_->catalog.system();
   const auto& cfg = state_->catalog.system();
   if( cfg.tls_cert.empty() || cfg.tls_key.empty() )
   {

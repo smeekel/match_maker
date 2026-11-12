@@ -3,6 +3,7 @@
 #include "types.hpp"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -55,9 +56,34 @@ struct SystemConfig
   int auth_fail_limit = 20;
   int auth_fail_window_sec = 60;
   int probe_timeout_ms = 500;
+  std::string admin_token;
 
   static SystemConfig from_map(const std::map<std::string, std::string>& values);
+  std::map<std::string, std::string> to_map() const;
 };
+
+enum class ConfigKind
+{
+  Int,
+  Bool,
+  String,
+  Secret,
+  Address
+};
+
+struct ConfigKey
+{
+  const char* name;
+  ConfigKind kind;
+  // The running process keeps the value it read at startup; reload does not apply it.
+  bool restart;
+};
+
+const std::vector<ConfigKey>& config_keys();
+const ConfigKey* find_config_key(const std::string& name);
+const char* config_kind_name(ConfigKind kind);
+// Returns an error message when |value| would not parse as |key| expects, or would stop startup.
+std::optional<std::string> check_config_value(const ConfigKey& key, const std::string& value);
 
 class Catalog
 {

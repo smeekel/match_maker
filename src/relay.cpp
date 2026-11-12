@@ -267,6 +267,35 @@ int RelayService::channels() const
   return static_cast<int>(channels_.size());
 }
 
+std::vector<ChannelSummary> RelayService::list(const std::string& lobby_id) const
+{
+  std::vector<ChannelSummary> out;
+  for( const auto& [_, channel] : channels_ )
+  {
+    if( !lobby_id.empty() && channel->lobby_id != lobby_id )
+    {
+      continue;
+    }
+    ChannelSummary row;
+    row.id = channel->id;
+    row.lobby_id = channel->lobby_id;
+    row.protocol = channel->protocol;
+    row.user_a = channel->user_a;
+    row.user_b = channel->user_b;
+    row.port_a = channel->port_a;
+    row.port_b = channel->port_b;
+    row.expires = channel->expires;
+    row.closing = channel->closing.load();
+    out.push_back(std::move(row));
+  }
+  std::sort(out.begin(), out.end(),
+            [](const ChannelSummary& a, const ChannelSummary& b)
+            {
+              return a.id < b.id;
+            });
+  return out;
+}
+
 std::uint64_t RelayService::forwarded_bytes() const
 {
   return forwarded_.load();

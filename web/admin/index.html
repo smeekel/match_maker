@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Matchmaker admin</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font: 14px/1.4 system-ui, sans-serif; margin: 1.5rem; max-width: 1200px; background: #121418; color: #e6e8ee; }
+    header { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    header h1 { margin: 0; font-size: 1.3rem; }
+    button, input, textarea, select { font: inherit; color: #e6e8ee; background: #0e1116; border: 1px solid #343b48; border-radius: 4px; padding: 0.2rem 0.45rem; }
+    input[type=checkbox] { width: auto; accent-color: #8eb4ff; }
+    button { background: #2a3140; cursor: pointer; }
+    button:hover { background: #364055; }
+    nav button { margin-right: 0.2rem; }
+    nav button.active { font-weight: 600; background: #3a4a6a; border-color: #6d88c0; }
+    fieldset { margin-bottom: 1rem; border: 1px solid #343b48; border-radius: 6px; background: #1c2028; }
+    legend { font-weight: 600; }
+    label { display: inline-block; margin: 0.2rem 0.6rem 0.2rem 0; }
+    input[type=text], input[type=password] { width: 16rem; }
+    input[type=number] { width: 7rem; }
+    textarea { width: 100%; min-height: 4rem; font: 12px/1.4 ui-monospace, monospace; }
+    button { margin: 0.2rem 0.3rem 0.2rem 0; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { padding: 0.25rem 0.5rem; border-bottom: 1px solid #343b48; text-align: left; vertical-align: top; }
+    th { color: #9aa3b2; font-weight: 600; }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover, tr.selected { background: #2a3348; }
+    code, .mono { font: 12px ui-monospace, monospace; }
+    pre { background: #0e1116; padding: 0.5rem; border-radius: 4px; margin: 0.3rem 0; white-space: pre-wrap; }
+    .muted { color: #9aa3b2; }
+    .badge { display: inline-block; padding: 0 0.4rem; border-radius: 4px; font-size: 12px; background: #343b48; color: #e6e8ee; }
+    .badge.restart { background: #5a3a1c; color: #ffd7b0; }
+    .badge.pending { background: #5a4a12; color: #ffe58a; }
+    .badge.live { background: #1d4a2a; color: #b7ebc2; }
+    .banner { background: #3a3418; border: 1px solid #8a7430; color: #ffe9a8; padding: 0.4rem 0.6rem; border-radius: 6px; margin-bottom: 0.6rem; }
+    .error { color: #ff8b8b; }
+    #status { min-height: 1.2rem; }
+    .hidden { display: none; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.2rem 1rem; }
+    ::placeholder { color: #6d7686; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Matchmaker admin</h1>
+    <nav id="tabs" class="hidden">
+      <button data-tab="config">Config</button>
+      <button data-tab="games">Games</button>
+      <button data-tab="regions">Regions</button>
+      <button data-tab="lobbies">Lobbies</button>
+    </nav>
+    <span id="reloadBox" class="hidden">
+      <button id="reload">Reload</button>
+      <span class="muted">applies saved config, games, and regions, like SIGHUP</span>
+    </span>
+    <button id="signOut" class="hidden">Sign out</button>
+  </header>
+  <div id="status"></div>
+
+  <fieldset id="signInBox">
+    <legend>Sign in</legend>
+    <label>Admin token <input type="password" id="tokenInput" autocomplete="off"></label>
+    <button id="signIn">Sign in</button>
+    <p class="muted">The token is the <code>admin_token</code> config value. It is kept in this tab's
+      session storage only.</p>
+  </fieldset>
+
+  <section id="tab-config" class="tab hidden">
+    <div id="configBanner"></div>
+    <p class="muted">Edits are written to the database. <b>reload</b> keys take effect on Reload.
+      <b>restart</b> keys are stored now and take effect the next time the process starts; their
+      live column shows the value the process started with.</p>
+    <button id="configSave">Save changes</button>
+    <table>
+      <thead><tr><th>Key</th><th>Applies</th><th>Live</th><th>Stored</th><th></th></tr></thead>
+      <tbody id="configRows"></tbody>
+    </table>
+  </section>
+
+  <section id="tab-games" class="tab hidden">
+    <div id="gamesBanner"></div>
+    <table>
+      <thead><tr><th>Name</th><th>Id</th><th>Promote host</th><th>Late join</th><th>Lobbies</th><th></th></tr></thead>
+      <tbody id="gameRows"></tbody>
+    </table>
+    <fieldset>
+      <legend id="gameFormTitle">New game</legend>
+      <label>Id <input type="text" id="gameId" placeholder="generated when blank"></label>
+      <label>Name <input type="text" id="gameName"></label>
+      <label>Token <input type="password" id="gameToken" autocomplete="off" placeholder="required for a new game"></label><br>
+      <label><input type="checkbox" id="gamePromote"> Promote host on leave</label>
+      <label><input type="checkbox" id="gameLateJoin"> Allow join in progress</label>
+      <div class="grid" id="gameLimits"></div>
+      <div id="gameClampNote" class="muted"></div>
+      <button id="gameSave">Save game</button>
+      <button id="gameNew">New game</button>
+    </fieldset>
+  </section>
+
+  <section id="tab-regions" class="tab hidden">
+    <div id="regionsBanner"></div>
+    <table>
+      <thead><tr><th>Id</th><th>Public URL</th><th>Sort</th><th></th><th></th></tr></thead>
+      <tbody id="regionRows"></tbody>
+    </table>
+    <fieldset>
+      <legend>Add or edit region</legend>
+      <label>Id <input type="text" id="regionId"></label>
+      <label>Public URL <input type="text" id="regionUrl" placeholder="https://eu.match.example.com"></label>
+      <label>Sort order <input type="number" id="regionSort" value="0"></label>
+      <button id="regionSave">Save region</button>
+    </fieldset>
+  </section>
+
+  <section id="tab-lobbies" class="tab hidden">
+    <label>Game <select id="lobbyGame"><option value="">All games</option></select></label>
+    <span class="muted">Refreshes every 2 seconds. Passwords and relay tokens are never shown.</span>
+    <table>
+      <thead><tr><th>Lobby</th><th>Game</th><th>Phase</th><th>Members</th><th>Locked</th><th>Code</th><th>Late join</th><th>Channels</th><th>Listed</th></tr></thead>
+      <tbody id="lobbyRows"></tbody>
+    </table>
+    <div id="lobbyDetail"></div>
+  </section>
+
+<script type="module">
+const API = '/admin/api/v1';
+const TOKEN_KEY = 'matchmaker_admin_token';
+const LIMIT_INTS = ['max_players_per_lobby', 'max_password_length', 'max_concurrent_channels',
+  'max_channel_lifetime_sec', 'max_idle_sec', 'max_lobbies', 'max_metadata_bytes',
+  'max_chat_bytes', 'max_custom_bytes', 'max_alias_bytes'];
+const LIMIT_FLAGS = ['allow_tcp', 'allow_wt'];
+
+let token = sessionStorage.getItem(TOKEN_KEY) || '';
+let pendingToken = null;
+let currentTab = 'config';
+let games = [];
+let selectedLobby = null;
+let pollTimer = null;
+
+const $ = (id) => document.getElementById(id);
+
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === undefined || value === null || value === false) continue;
+    if (key.startsWith('on')) el.addEventListener(key.slice(2), value);
+    else if (key === 'className') el.className = value;
+    else if (key === 'value') el.value = value;
+    else if (key === 'checked') el.checked = value;
+    else el.setAttribute(key, value === true ? '' : value);
+  }
+  for (const child of children.flat()) {
+    if (child === undefined || child === null || child === false) continue;
+    el.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return el;
+}
+
+function badge(text, kind = '') {
+  return h('span', { className: 'badge ' + kind }, text);
+}
+
+function status(message, isError = false) {
+  const box = $('status');
+  box.replaceChildren(message ? h('span', { className: isError ? 'error' : 'muted' }, message) : '');
+}
+
+async function api(method, path, body) {
+  const headers = { Authorization: 'Bearer ' + token };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await fetch(API + path, {
+    method, headers, cache: 'no-store',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    signOut('Signed out: the admin token was not accepted.');
+  }
+  if (!res.ok) {
+    throw new Error(data.message || data.error || ('HTTP ' + res.status));
+  }
+  return data;
+}
+
+async function run(label, fn) {
+  try {
+    const result = await fn();
+    if (label) status(label);
+    return result;
+  } catch (err) {
+    status(err.message, true);
+    return undefined;
+  }
+}
+
+function pendingBanner(box, show, text) {
+  box.replaceChildren(show ? h('div', { className: 'banner' }, text, ' ',
+    h('button', { onclick: reload }, 'Reload now')) : '');
+}
+
+// Sign in
+
+function signedIn(on) {
+  $('signInBox').classList.toggle('hidden', on);
+  $('tabs').classList.toggle('hidden', !on);
+  $('reloadBox').classList.toggle('hidden', !on);
+  $('signOut').classList.toggle('hidden', !on);
+  if (!on) {
+    for (const tab of document.querySelectorAll('.tab')) tab.classList.add('hidden');
+  }
+}
+
+function signOut(message) {
+  token = '';
+  pendingToken = null;
+  sessionStorage.removeItem(TOKEN_KEY);
+  stopPolling();
+  signedIn(false);
+  status(message || '');
+}
+
+async function signIn() {
+  token = $('tokenInput').value.trim();
+  $('tokenInput').value = '';
+  if (!token) return;
+  const ok = await run('', () => api('GET', '/config'));
+  if (!ok) {
+    token = '';
+    return;
+  }
+  sessionStorage.setItem(TOKEN_KEY, token);
+  signedIn(true);
+  showTab(currentTab);
+}
+
+async function reload() {
+  const ok = await run('Reloaded.', () => api('POST', '/reload'));
+  if (ok && pendingToken) {
+    token = pendingToken;
+    pendingToken = null;
+    sessionStorage.setItem(TOKEN_KEY, token);
+  }
+  showTab(currentTab);
+}
+
+// Tabs
+
+function showTab(name) {
+  currentTab = name;
+  for (const button of document.querySelectorAll('#tabs button')) {
+    button.classList.toggle('active', button.dataset.tab === name);
+  }
+  for (const tab of document.querySelectorAll('.tab')) {
+    tab.classList.toggle('hidden', tab.id !== 'tab-' + name);
+  }
+  stopPolling();
+  if (name === 'config') loadConfig();
+  if (name === 'games') loadGames();
+  if (name === 'regions') loadRegions();
+  if (name === 'lobbies') startPolling();
+}
+
+// Config
+
+let configKeys = [];
+
+async function loadConfig() {
+  const data = await run('', () => api('GET', '/config'));
+  if (!data) return;
+  configKeys = data.keys;
+  const rows = configKeys.map((entry) => {
+    const stored = entry.stored ?? '';
+    let input;
+    if (entry.kind === 'bool') {
+      input = h('select', { 'data-key': entry.key },
+        ['1', '0'].map((v) => h('option', { value: v }, v === '1' ? 'on (1)' : 'off (0)')));
+      input.value = ['1', 'true', 'TRUE', 'yes'].includes(stored) ? '1' : '0';
+      input.dataset.original = input.value;
+    } else {
+      input = h('input', {
+        type: entry.kind === 'secret' ? 'password' : (entry.kind === 'int' ? 'number' : 'text'),
+        'data-key': entry.key, value: stored, autocomplete: 'off',
+      });
+      input.dataset.original = stored;
+    }
+    const live = entry.kind === 'secret' ? (entry.live ? '(set)' : '(empty)') : entry.live;
+    const reveal = entry.kind === 'secret'
+      ? h('button', { onclick: () => { input.type = input.type === 'password' ? 'text' : 'password'; } }, 'show')
+      : null;
+    return h('tr', {},
+      h('td', {}, h('code', {}, entry.key)),
+      h('td', {}, badge(entry.apply, entry.apply === 'restart' ? 'restart' : '')),
+      h('td', { className: 'mono' }, live),
+      h('td', {}, input, reveal),
+      h('td', {}, entry.pending ? badge(entry.apply === 'restart' ? 'needs restart' : 'pending reload', 'pending') : ''));
+  });
+  $('configRows').replaceChildren(...rows);
+  const reloadPending = configKeys.filter((k) => k.pending && k.apply === 'reload').map((k) => k.key);
+  const restartPending = configKeys.filter((k) => k.pending && k.apply === 'restart').map((k) => k.key);
+  const box = $('configBanner');
+  box.replaceChildren();
+  if (reloadPending.length) {
+    box.append(h('div', { className: 'banner' }, 'Saved but not live until Reload: ',
+      reloadPending.join(', '), ' ', h('button', { onclick: reload }, 'Reload now')));
+  }
+  if (restartPending.length) {
+    box.append(h('div', { className: 'banner' }, 'Stored, but the running process keeps its startup value until it restarts: ',
+      restartPending.join(', ')));
+  }
+}
+
+async function saveConfig() {
+  const values = {};
+  for (const input of document.querySelectorAll('#configRows [data-key]')) {
+    if (input.value !== input.dataset.original) values[input.dataset.key] = input.value;
+  }
+  if (!Object.keys(values).length) {
+    status('No changes to save.');
+    return;
+  }
+  if ('admin_token' in values && !values.admin_token) {
+    status('admin_token cannot be empty.', true);
+    return;
+  }
+  const ok = await run('Saved. Press Reload to apply.', () => api('POST', '/config', { values }));
+  if (ok && 'admin_token' in values) pendingToken = values.admin_token;
+  if (ok) loadConfig();
+}
+
+// Games
+
+function limitInputs(limits = {}) {
+  const fields = LIMIT_INTS.map((key) => h('label', {}, key, ' ',
+    h('input', { type: 'number', min: '0', 'data-limit': key, value: limits[key] ?? '' })));
+  const flags = LIMIT_FLAGS.map((key) => h('label', {},
+    h('input', { type: 'checkbox', 'data-limit': key, checked: !!limits[key] }), ' ', key));
+  $('gameLimits').replaceChildren(...fields, ...flags);
+}
+
+function editGame(game) {
+  $('gameFormTitle').textContent = game ? 'Edit ' + game.name : 'New game';
+  $('gameId').value = game ? game.id : '';
+  $('gameId').readOnly = !!game;
+  $('gameName').value = game ? game.name : '';
+  $('gameToken').value = '';
+  $('gameToken').placeholder = game ? 'leave blank to keep the current token' : 'required for a new game';
+  $('gamePromote').checked = game ? game.promote_host_on_leave : false;
+  $('gameLateJoin').checked = game ? game.allow_join_in_progress : false;
+  limitInputs(game ? game.limits : {});
+  const note = $('gameClampNote');
+  note.textContent = '';
+  if (game && game.live) {
+    const clamped = Object.keys(game.limits).filter((k) => game.live.limits[k] !== game.limits[k]);
+    if (clamped.length) {
+      note.textContent = 'Live values clamped by system caps: ' +
+        clamped.map((k) => `${k}=${game.live.limits[k]}`).join(', ');
+    }
+  }
+}
+
+async function loadGames() {
+  const data = await run('', () => api('GET', '/games'));
+  if (!data) return;
+  games = data.games;
+  const rows = games.map((game) => h('tr', {},
+    h('td', {}, game.name, ' ', !game.stored ? badge('deleted, still live', 'pending') : (game.pending ? badge('pending reload', 'pending') : '')),
+    h('td', { className: 'mono' }, game.id),
+    h('td', {}, game.promote_host_on_leave ? 'yes' : 'no'),
+    h('td', {}, game.allow_join_in_progress ? 'yes' : 'no'),
+    h('td', {}, game.lobbies),
+    h('td', {},
+      game.stored ? h('button', { onclick: () => editGame(game) }, 'Edit') : null,
+      game.stored ? h('button', { onclick: () => deleteGame(game) }, 'Delete') : null)));
+  $('gameRows').replaceChildren(...rows);
+  pendingBanner($('gamesBanner'), games.some((g) => g.pending), 'Saved game changes are not live until Reload.');
+  if (!$('gameName').value && !$('gameId').value) editGame(null);
+}
+
+async function saveGame() {
+  const body = {
+    name: $('gameName').value.trim(),
+    promote_host_on_leave: $('gamePromote').checked,
+    allow_join_in_progress: $('gameLateJoin').checked,
+    limits: {},
+  };
+  const id = $('gameId').value.trim();
+  if (id) body.id = id;
+  const tokenValue = $('gameToken').value;
+  if (tokenValue) body.token = tokenValue;
+  for (const input of document.querySelectorAll('#gameLimits [data-limit]')) {
+    const key = input.dataset.limit;
+    if (input.type === 'checkbox') body.limits[key] = input.checked;
+    else if (input.value !== '') body.limits[key] = Number.parseInt(input.value, 10);
+  }
+  const saved = await run('Game saved. Press Reload to apply.', () => api('POST', '/games', body));
+  if (!saved) return;
+  $('gameToken').value = '';
+  await loadGames();
+  editGame(games.find((g) => g.id === saved.game.id) || null);
+}
+
+async function deleteGame(game) {
+  if (!confirm(`Delete game "${game.name}"? Clients can no longer authenticate after Reload.`)) return;
+  await run('Game deleted. Press Reload to apply.', () => api('POST', `/games/${encodeURIComponent(game.id)}/delete`));
+  editGame(null);
+  loadGames();
+}
+
+// Regions
+
+async function loadRegions() {
+  const data = await run('', () => api('GET', '/regions'));
+  if (!data) return;
+  const rows = data.regions.map((region) => h('tr', {},
+    h('td', { className: 'mono' }, region.id),
+    h('td', {}, region.public_url),
+    h('td', {}, region.sort_order),
+    h('td', {}, region.current ? badge('this process', 'live') : '',
+      ' ', !region.stored ? badge('deleted, still live', 'pending') : (region.pending ? badge('pending reload', 'pending') : '')),
+    h('td', {},
+      region.stored ? h('button', { onclick: () => {
+        $('regionId').value = region.id;
+        $('regionUrl').value = region.public_url;
+        $('regionSort').value = region.sort_order;
+      } }, 'Edit') : null,
+      region.stored && !region.current ? h('button', { onclick: () => deleteRegion(region) }, 'Delete') : null)));
+  $('regionRows').replaceChildren(...rows);
+  pendingBanner($('regionsBanner'), data.regions.some((r) => r.pending), 'Saved region changes are not live until Reload.');
+}
+
+async function saveRegion() {
+  const body = {
+    id: $('regionId').value.trim(),
+    public_url: $('regionUrl').value.trim(),
+    sort_order: Number.parseInt($('regionSort').value || '0', 10),
+  };
+  const ok = await run('Region saved. Press Reload to apply.', () => api('POST', '/regions', body));
+  if (ok) loadRegions();
+}
+
+async function deleteRegion(region) {
+  if (!confirm(`Delete region "${region.id}"?`)) return;
+  await run('Region deleted. Press Reload to apply.', () => api('POST', `/regions/${encodeURIComponent(region.id)}/delete`));
+  loadRegions();
+}
+
+// Lobbies
+
+function gameName(id) {
+  const game = games.find((g) => g.id === id);
+  return game ? game.name : id;
+}
+
+function startPolling() {
+  stopPolling();
+  if (!games.length) api('GET', '/games').then((d) => { games = d.games; fillGameFilter(); }).catch(() => {});
+  else fillGameFilter();
+  pollLobbies();
+  pollTimer = setInterval(pollLobbies, 2000);
+}
+
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+function fillGameFilter() {
+  const select = $('lobbyGame');
+  const keep = select.value;
+  select.replaceChildren(h('option', { value: '' }, 'All games'),
+    ...games.map((g) => h('option', { value: g.id }, g.name)));
+  select.value = keep;
+}
+
+async function pollLobbies() {
+  let data;
+  try {
+    data = await api('GET', '/lobbies');
+  } catch (err) {
+    status(err.message, true);
+    return;
+  }
+  const filter = $('lobbyGame').value;
+  const lobbies = data.lobbies.filter((l) => !filter || l.game_id === filter);
+  const rows = lobbies.map((lobby) => h('tr', {
+    className: 'clickable' + (lobby.lobby_id === selectedLobby ? ' selected' : ''),
+    onclick: () => openLobby(lobby.lobby_id),
+  },
+    h('td', { className: 'mono' }, lobby.lobby_id.slice(0, 8)),
+    h('td', {}, gameName(lobby.game_id)),
+    h('td', {}, lobby.phase),
+    h('td', {}, `${lobby.member_count} / ${lobby.slots}`),
+    h('td', {}, lobby.locked ? 'yes' : 'no'),
+    h('td', { className: 'mono' }, lobby.short_code ?? ''),
+    h('td', {}, lobby.allow_late_join ? 'yes' : 'no'),
+    h('td', {}, lobby.channel_count),
+    h('td', {}, lobby.listed ? 'yes' : 'no')));
+  $('lobbyRows').replaceChildren(...(rows.length ? rows
+    : [h('tr', {}, h('td', { colspan: '9', className: 'muted' }, 'No live lobbies.'))]));
+  if (selectedLobby) refreshLobbyState();
+}
+
+let lobbyState = null;
+
+async function openLobby(id) {
+  selectedLobby = id;
+  const view = await run('', () => api('GET', '/lobbies/' + encodeURIComponent(id)));
+  if (!view) return;
+  renderLobbyDetail(view);
+}
+
+async function refreshLobbyState() {
+  let view;
+  try {
+    view = await api('GET', '/lobbies/' + encodeURIComponent(selectedLobby));
+  } catch (err) {
+    lobbyState?.replaceChildren(h('p', { className: 'muted' }, 'This lobby has ended.'));
+    selectedLobby = null;
+    return;
+  }
+  renderLobbyState(view);
+}
+
+async function lobbyOp(body, label) {
+  const result = await run(label, () => api('POST', '/lobbies/' + encodeURIComponent(selectedLobby), body));
+  if (!result) return;
+  if (result.lobby) renderLobbyDetail(result.lobby);
+  else {
+    $('lobbyDetail').replaceChildren(h('p', { className: 'muted' }, 'The lobby has ended.'));
+    selectedLobby = null;
+  }
+  pollLobbies();
+}
+
+function renderLobbyState(view) {
+  if (!lobbyState) return;
+  const members = h('table', {},
+    h('thead', {}, h('tr', {}, ['Alias', 'User id', 'External id', 'Role', 'Ready', 'Transport', 'Reservation', ''].map((t) => h('th', {}, t)))),
+    h('tbody', {}, view.members.map((m) => h('tr', {},
+      h('td', {}, m.alias),
+      h('td', { className: 'mono' }, m.user_id),
+      h('td', {}, m.external_id),
+      h('td', {}, m.host ? 'host' : 'member'),
+      h('td', {}, m.ready ? 'yes' : 'no'),
+      h('td', {}, m.connected ? m.transport : 'not connected'),
+      h('td', {}, m.hold ?? ''),
+      h('td', {}, h('button', { onclick: () => {
+        if (confirm(`Remove ${m.alias || m.user_id} from the lobby?`)) {
+          lobbyOp({ op: 'kick', user_id: m.user_id }, 'Member removed.');
+        }
+      } }, 'Kick'))))));
+  const channels = view.channels.length
+    ? h('table', {},
+      h('thead', {}, h('tr', {}, ['Channel', 'Protocol', 'A', 'B', 'Expires in', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, view.channels.map((c) => h('tr', {},
+        h('td', { className: 'mono' }, c.id.slice(0, 8)),
+        h('td', {}, c.protocol),
+        h('td', { className: 'mono' }, c.a.user_id.slice(0, 8), c.a.port ? ':' + c.a.port : ''),
+        h('td', { className: 'mono' }, c.b.user_id.slice(0, 8), c.b.port ? ':' + c.b.port : ''),
+        h('td', {}, c.closing ? 'closing' : c.expires_in_sec + ' s'),
+        h('td', {}, h('button', { onclick: () => lobbyOp({ op: 'release_channel', channel_id: c.id }, 'Channel released.') }, 'Release'))))))
+    : h('p', { className: 'muted' }, 'No relay channels.');
+  lobbyState.replaceChildren(
+    h('p', {},
+      'Phase ', h('b', {}, view.phase), ' · slots ', h('b', {}, view.slots),
+      ' · members ', h('b', {}, view.member_count), ' · locked ', h('b', {}, view.locked ? 'yes' : 'no'),
+      ' · late join ', h('b', {}, view.allow_late_join ? 'yes' : 'no'),
+      ' · code ', h('b', {}, view.short_code ?? 'none'), ' · listed ', h('b', {}, view.listed ? 'yes' : 'no')),
+    h('div', {}, 'Metadata', h('pre', {}, JSON.stringify(view.metadata, null, 2))),
+    h('h4', {}, 'Members'), members,
+    h('h4', {}, 'Relay channels ',
+      view.channels.length ? h('button', { onclick: () => lobbyOp({ op: 'release_channels' }, 'Channels released.') }, 'Release all') : null),
+    channels);
+}
+
+function renderLobbyDetail(view) {
+  const phase = h('select', {}, ['closed', 'open', 'in_progress'].map((p) => h('option', { value: p }, p)));
+  phase.value = view.phase;
+  const slots = h('input', { type: 'number', min: '1', value: view.slots });
+  const lateJoin = h('input', { type: 'checkbox', checked: view.allow_late_join });
+  const code = h('input', { type: 'text', value: view.short_code ?? '', placeholder: 'empty clears it' });
+  const password = h('input', { type: 'password', autocomplete: 'new-password', placeholder: 'new password' });
+  const metadata = h('textarea', { placeholder: '{"map": "dust", "old_key": null}' });
+  lobbyState = h('div');
+  const controls = h('fieldset', {},
+    h('legend', {}, 'Host controls'),
+    h('label', {}, 'Phase ', phase), h('button', { onclick: () => lobbyOp({ op: 'set_phase', phase: phase.value }, 'Phase set.') }, 'Set'),
+    h('label', {}, 'Slots ', slots), h('button', { onclick: () => lobbyOp({ op: 'set_slots', slots: Number.parseInt(slots.value, 10) }, 'Slots set.') }, 'Set'),
+    h('label', {}, lateJoin, ' Late join'), h('button', { onclick: () => lobbyOp({ op: 'set_late_join', allowed: lateJoin.checked }, 'Late join set.') }, 'Set'),
+    h('br'),
+    h('label', {}, 'Short code ', code), h('button', { onclick: () => lobbyOp({ op: 'set_short_code', code: code.value || null }, 'Short code set.') }, 'Set'),
+    h('label', {}, 'Lock ', password),
+    h('button', { onclick: () => {
+      if (!password.value) { status('Enter a password, or use Clear lock.', true); return; }
+      lobbyOp({ op: 'set_password', password: password.value }, 'Lock set.');
+    } }, 'Set lock'),
+    h('button', { onclick: () => lobbyOp({ op: 'set_password', password: null }, 'Lock cleared.') }, 'Clear lock'),
+    h('div', {}, 'Metadata patch (a null value deletes that key)', metadata,
+      h('button', { onclick: () => {
+        let patch;
+        try { patch = JSON.parse(metadata.value); } catch { status('Metadata patch is not valid JSON.', true); return; }
+        lobbyOp({ op: 'set_metadata', metadata: patch }, 'Metadata updated.');
+      } }, 'Apply patch')),
+    h('div', {}, h('button', { onclick: () => {
+      if (confirm('Close this lobby? Every member is disconnected.')) lobbyOp({ op: 'close' }, 'Lobby closed.');
+    } }, 'Close lobby')));
+  $('lobbyDetail').replaceChildren(
+    h('h3', {}, 'Lobby ', h('span', { className: 'mono' }, view.lobby_id), ' ',
+      h('span', { className: 'muted' }, gameName(view.game_id)),
+      ' ', h('button', { onclick: () => { selectedLobby = null; lobbyState = null; $('lobbyDetail').replaceChildren(); pollLobbies(); } }, 'Close panel')),
+    controls, lobbyState);
+  renderLobbyState(view);
+}
+
+// Wiring
+
+for (const button of document.querySelectorAll('#tabs button')) {
+  button.addEventListener('click', () => showTab(button.dataset.tab));
+}
+$('signIn').addEventListener('click', signIn);
+$('tokenInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') signIn(); });
+$('signOut').addEventListener('click', () => signOut('Signed out.'));
+$('reload').addEventListener('click', reload);
+$('configSave').addEventListener('click', saveConfig);
+$('gameSave').addEventListener('click', saveGame);
+$('gameNew').addEventListener('click', () => editGame(null));
+$('regionSave').addEventListener('click', saveRegion);
+$('lobbyGame').addEventListener('change', pollLobbies);
+
+if (token) {
+  api('GET', '/config').then(() => { signedIn(true); showTab(currentTab); }).catch(() => {});
+}
+</script>
+</body>
+</html>

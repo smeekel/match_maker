@@ -20,6 +20,7 @@ std::string url_decode(std::string_view in);
 std::optional<std::pair<std::string, std::uint16_t>> parse_host_port(std::string_view text);
 std::filesystem::path executable_dir();
 std::filesystem::path migrations_dir();
+std::filesystem::path admin_page_path();
 std::string gzip_compress(std::string_view input);
 std::optional<std::string> gzip_decompress(std::string_view input);
 int env_int(const char* key, int fallback);

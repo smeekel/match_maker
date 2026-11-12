@@ -27,6 +27,7 @@ enum class ErrorCode
   AlreadyInLobby,
   NotFound,
   Forbidden,
+  Conflict,
   Internal
 };
 

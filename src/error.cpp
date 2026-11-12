@@ -43,6 +43,8 @@ const char* error_code_string(ErrorCode code)
     return "not_found";
   case ErrorCode::Forbidden:
     return "forbidden";
+  case ErrorCode::Conflict:
+    return "conflict";
   case ErrorCode::Internal:
     return "internal";
   }
@@ -73,6 +75,7 @@ int http_status(ErrorCode code)
   case ErrorCode::CodeTaken:
   case ErrorCode::Limit:
   case ErrorCode::LifetimeExceedsLimit:
+  case ErrorCode::Conflict:
     case ErrorCode::AlreadyInLobby:
       return 409;
   case ErrorCode::TooLarge:

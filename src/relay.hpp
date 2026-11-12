@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace matchmaker
 {
@@ -60,6 +61,20 @@ struct ChannelInfo
   SideInfo b;
 };
 
+// A channel as an operator sees it. Tokens are deliberately absent.
+struct ChannelSummary
+{
+  std::string id;
+  std::string lobby_id;
+  std::string protocol;
+  std::string user_a;
+  std::string user_b;
+  int port_a = 0;
+  int port_b = 0;
+  std::chrono::steady_clock::time_point expires{};
+  bool closing = false;
+};
+
 struct RelayClosed
 {
   std::string id;
@@ -94,6 +109,8 @@ public:
                                         Time now);
   void set_on_closed(std::function<void(const RelayClosed&)> fn);
   int channels() const;
+  // Every channel when |lobby_id| is empty, otherwise only that lobby's.
+  std::vector<ChannelSummary> list(const std::string& lobby_id = {}) const;
   std::uint64_t forwarded_bytes() const;
   std::uint64_t drops() const;
 

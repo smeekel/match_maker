@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.25)
 project(matchmaker LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -174,9 +174,15 @@ set(MM_SOURCES
   src/lobby.cpp
   src/relay.cpp
   src/log.cpp
+  src/admin.cpp
   src/h3.cpp
   src/wt.cpp
   src/net.cpp)
+
+# Re-apply after dependencies. A later add_library copies this value.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(matchmaker_core STATIC ${MM_SOURCES})
 target_include_directories(matchmaker_core PUBLIC
@@ -238,7 +244,11 @@ function(mm_copy_runtime target)
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/migrations"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${CMAKE_SOURCE_DIR}/migrations/sqlite"
-      "$<TARGET_FILE_DIR:${target}>/migrations/sqlite")
+      "$<TARGET_FILE_DIR:${target}>/migrations/sqlite"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/web/admin"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_SOURCE_DIR}/web/admin/index.html"
+      "$<TARGET_FILE_DIR:${target}>/web/admin/index.html")
   if(WIN32)
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -247,6 +257,11 @@ function(mm_copy_runtime target)
         "$<TARGET_FILE_DIR:${target}>")
   endif()
 endfunction()
+
+set_target_properties(matchmaker_core matchmaker_client matchmaker matchmaker_tests PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
 
 mm_copy_runtime(matchmaker)
 mm_copy_runtime(matchmaker_tests)

@@ -269,6 +269,43 @@ public:
     }
   }
 
+  bool delete_game(const std::string& id) override
+  {
+    bind_exec("DELETE FROM games WHERE id=?", id);
+    return sqlite3_changes(db_) > 0;
+  }
+
+  void upsert_region(const Region& region) override
+  {
+    if( region.id.empty() || region.public_url.empty() )
+    {
+      throw std::runtime_error("region id and public_url are required");
+    }
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT INTO regions(id, public_url, sort_order) VALUES(?,?,?) "
+                      "ON CONFLICT(id) DO UPDATE SET public_url=excluded.public_url, "
+                      "sort_order=excluded.sort_order";
+    if( sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK )
+    {
+      fail_sql(db_, "upsert region");
+    }
+    sqlite3_bind_text(stmt, 1, region.id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, region.public_url.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, region.sort_order);
+    const auto rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    if( rc != SQLITE_DONE )
+    {
+      fail_sql(db_, "upsert region step");
+    }
+  }
+
+  bool delete_region(const std::string& id) override
+  {
+    bind_exec("DELETE FROM regions WHERE id=?", id);
+    return sqlite3_changes(db_) > 0;
+  }
+
   void insert_log(const LogRecord& row) override
   {
     sqlite3_stmt* stmt = nullptr;

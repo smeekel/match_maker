@@ -235,6 +235,114 @@ Status LobbyService::require_member(const Actor& actor, Lobby& lobby)
   return true;
 }
 
+Result<LobbyService::Lobby*> LobbyService::controlled(const Actor* actor,
+                                                      const std::string& lobby_id)
+{
+  auto* lobby = find_lobby(lobby_id);
+  if( !lobby )
+  {
+    return Err(ErrorCode::NotFound, "lobby not found");
+  }
+  if( actor )
+  {
+    if( auto status = require_host(*actor, *lobby); !status )
+    {
+      return Unexpected{status.error()};
+    }
+  }
+  return lobby;
+}
+
+std::vector<std::string> LobbyService::audience(const Lobby& lobby, const Actor* actor) const
+{
+  return connected_ids(lobby, actor ? actor->user_id : std::string{});
+}
+
+nlohmann::json LobbyService::admin_row(const Lobby& lobby) const
+{
+  auto row = summary(lobby);
+  row["game_id"] = lobby.game_id;
+  row["listed"] = listable(lobby);
+  return row;
+}
+
+nlohmann::json LobbyService::admin_list() const
+{
+  std::vector<const Lobby*> rows;
+  for( const auto& [_, lobby] : lobbies_ )
+  {
+    rows.push_back(&lobby);
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const Lobby* a, const Lobby* b)
+            {
+              return a->seq < b->seq;
+            });
+  nlohmann::json out = nlohmann::json::array();
+  for( const auto* lobby : rows )
+  {
+    out.push_back(admin_row(*lobby));
+  }
+  return out;
+}
+
+Result<nlohmann::json> LobbyService::admin_view(const std::string& lobby_id) const
+{
+  const auto* lobby = find_lobby(lobby_id);
+  if( !lobby )
+  {
+    return Err(ErrorCode::NotFound, "lobby not found");
+  }
+  auto view = admin_row(*lobby);
+  nlohmann::json members = nlohmann::json::array();
+  for( const auto& member : lobby->members )
+  {
+    const char* hold = member.hold == Member::Hold::Host   ? "host"
+                       : member.hold == Member::Hold::Join ? "join"
+                                                           : nullptr;
+    members.push_back({{"user_id", member.user_id},
+                       {"alias", member.alias},
+                       {"external_id", member.external_id},
+                       {"ready", member.ready},
+                       {"connected", member.connected},
+                       {"transport", member.connected ? nlohmann::json(member.transport)
+                                                      : nlohmann::json(nullptr)},
+                       {"hold", hold ? nlohmann::json(hold) : nlohmann::json(nullptr)},
+                       {"host", member.user_id == lobby->host_id}});
+  }
+  view["members"] = std::move(members);
+  return view;
+}
+
+Status LobbyService::admin_kick(const std::string& lobby_id, const std::string& user_id, Time now)
+{
+  auto* lobby = find_lobby(lobby_id);
+  if( !lobby )
+  {
+    return Err(ErrorCode::NotFound, "lobby not found");
+  }
+  const auto* member = find_member(*lobby, user_id);
+  if( !member )
+  {
+    return Err(ErrorCode::UnknownUser, "user is not in this lobby");
+  }
+  if( member->connected )
+  {
+    emit(event_of("kicked", {{"lobby_id", lobby_id}, {"user_id", user_id}}), {user_id});
+  }
+  return leave(user_id, now);
+}
+
+Status LobbyService::admin_close(const std::string& lobby_id)
+{
+  if( !find_lobby(lobby_id) )
+  {
+    return Err(ErrorCode::NotFound, "lobby not found");
+  }
+  destroy(lobby_id, "admin");
+  return true;
+}
+
 Result<nlohmann::json> LobbyService::create(const Actor& actor, Time now)
 {
   if( user_in_lobby(actor.user_id) )
@@ -445,39 +553,33 @@ void LobbyService::drop_unconnected(const std::string& user_id, Time now)
   leave(user_id, now);
 }
 
-Status LobbyService::set_phase(const Actor& actor, const std::string& lobby_id,
-                               const std::string& phase)
+Status LobbyService::set_phase_as(const Actor* actor, const std::string& lobby_id,
+                                  const std::string& phase)
 {
-  auto* lobby = find_lobby(lobby_id);
-  if( !lobby )
+  auto found = controlled(actor, lobby_id);
+  if( !found )
   {
-    return Err(ErrorCode::NotFound, "lobby not found");
+    return Unexpected{found.error()};
   }
-  if( auto status = require_host(actor, *lobby); !status )
-  {
-    return status;
-  }
+  auto* lobby = *found;
   if( phase != "closed" && phase != "open" && phase != "in_progress" )
   {
     return Err(ErrorCode::BadRequest, "unknown phase");
   }
   lobby->phase = phase;
   emit(event_of("lobby_phase_changed", {{"lobby_id", lobby_id}, {"phase", phase}}),
-       connected_ids(*lobby, actor.user_id));
+       audience(*lobby, actor));
   return true;
 }
 
-Status LobbyService::set_slots(const Actor& actor, const std::string& lobby_id, int slots)
+Status LobbyService::set_slots_as(const Actor* actor, const std::string& lobby_id, int slots)
 {
-  auto* lobby = find_lobby(lobby_id);
-  if( !lobby )
+  auto found = controlled(actor, lobby_id);
+  if( !found )
   {
-    return Err(ErrorCode::NotFound, "lobby not found");
+    return Unexpected{found.error()};
   }
-  if( auto status = require_host(actor, *lobby); !status )
-  {
-    return status;
-  }
+  auto* lobby = *found;
   const auto* game = rules(lobby->game_id);
   if( !game )
   {
@@ -494,39 +596,34 @@ Status LobbyService::set_slots(const Actor& actor, const std::string& lobby_id, 
   }
   lobby->slots = slots;
   emit(event_of("slots_changed", {{"lobby_id", lobby_id}, {"slots", slots}}),
-       connected_ids(*lobby, actor.user_id));
+       audience(*lobby, actor));
   return true;
 }
 
-Status LobbyService::set_late_join(const Actor& actor, const std::string& lobby_id, bool allowed)
+Status LobbyService::set_late_join_as(const Actor* actor, const std::string& lobby_id,
+                                      bool allowed)
 {
-  auto* lobby = find_lobby(lobby_id);
-  if( !lobby )
+  auto found = controlled(actor, lobby_id);
+  if( !found )
   {
-    return Err(ErrorCode::NotFound, "lobby not found");
+    return Unexpected{found.error()};
   }
-  if( auto status = require_host(actor, *lobby); !status )
-  {
-    return status;
-  }
+  auto* lobby = *found;
   lobby->allow_late_join = allowed;
   emit(event_of("late_join_changed", {{"lobby_id", lobby_id}, {"allow_late_join", allowed}}),
-       connected_ids(*lobby, actor.user_id));
+       audience(*lobby, actor));
   return true;
 }
 
-Status LobbyService::set_password(const Actor& actor, const std::string& lobby_id,
-                                  const std::optional<std::string>& password)
+Status LobbyService::set_password_as(const Actor* actor, const std::string& lobby_id,
+                                     const std::optional<std::string>& password)
 {
-  auto* lobby = find_lobby(lobby_id);
-  if( !lobby )
+  auto found = controlled(actor, lobby_id);
+  if( !found )
   {
-    return Err(ErrorCode::NotFound, "lobby not found");
+    return Unexpected{found.error()};
   }
-  if( auto status = require_host(actor, *lobby); !status )
-  {
-    return status;
-  }
+  auto* lobby = *found;
   if( !password || password->empty() )
   {
     lobby->password.reset();
@@ -545,22 +642,19 @@ Status LobbyService::set_password(const Actor& actor, const std::string& lobby_i
     lobby->password = *password;
   }
   emit(event_of("lock_changed", {{"lobby_id", lobby_id}, {"locked", lobby->password.has_value()}}),
-       connected_ids(*lobby, actor.user_id));
+       audience(*lobby, actor));
   return true;
 }
 
-Status LobbyService::set_short_code(const Actor& actor, const std::string& lobby_id,
-                                    const std::optional<std::string>& code)
+Status LobbyService::set_short_code_as(const Actor* actor, const std::string& lobby_id,
+                                       const std::optional<std::string>& code)
 {
-  auto* lobby = find_lobby(lobby_id);
-  if( !lobby )
+  auto found = controlled(actor, lobby_id);
+  if( !found )
   {
-    return Err(ErrorCode::NotFound, "lobby not found");
+    return Unexpected{found.error()};
   }
-  if( auto status = require_host(actor, *lobby); !status )
-  {
-    return status;
-  }
+  auto* lobby = *found;
   std::optional<std::string> next;
   if( !code || code->empty() )
   {
@@ -592,22 +686,19 @@ Status LobbyService::set_short_code(const Actor& actor, const std::string& lobby
   emit(event_of("short_code_changed",
                 {{"lobby_id", lobby_id},
                  {"short_code", next ? nlohmann::json(*next) : nlohmann::json(nullptr)}}),
-       connected_ids(*lobby, actor.user_id));
+       audience(*lobby, actor));
   return true;
 }
 
-Status LobbyService::set_metadata(const Actor& actor, const std::string& lobby_id,
-                                  const nlohmann::json& patch)
+Status LobbyService::set_metadata_as(const Actor* actor, const std::string& lobby_id,
+                                     const nlohmann::json& patch)
 {
-  auto* lobby = find_lobby(lobby_id);
-  if( !lobby )
+  auto found = controlled(actor, lobby_id);
+  if( !found )
   {
-    return Err(ErrorCode::NotFound, "lobby not found");
+    return Unexpected{found.error()};
   }
-  if( auto status = require_host(actor, *lobby); !status )
-  {
-    return status;
-  }
+  auto* lobby = *found;
   if( !patch.is_object() )
   {
     return Err(ErrorCode::BadRequest, "metadata must be an object");
@@ -635,7 +726,7 @@ Status LobbyService::set_metadata(const Actor& actor, const std::string& lobby_i
   }
   lobby->metadata = std::move(next);
   emit(event_of("lobby_metadata", {{"lobby_id", lobby_id}, {"metadata", lobby->metadata}}),
-       connected_ids(*lobby, actor.user_id));
+       audience(*lobby, actor));
   return true;
 }
 

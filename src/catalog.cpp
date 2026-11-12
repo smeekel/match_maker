@@ -1,5 +1,8 @@
 #include "catalog.hpp"
 
+#include "util.hpp"
+
+#include <limits>
 #include <map>
 
 namespace matchmaker
@@ -24,14 +27,8 @@ int parse_int(const std::map<std::string, std::string>& values, const char* key,
   }
 }
 
-bool parse_bool(const std::map<std::string, std::string>& values, const char* key, bool fallback)
+std::optional<bool> bool_token(const std::string& v)
 {
-  const auto it = values.find(key);
-  if( it == values.end() )
-  {
-    return fallback;
-  }
-  const auto& v = it->second;
   if( v == "1" || v == "true" || v == "TRUE" || v == "yes" )
   {
     return true;
@@ -40,7 +37,17 @@ bool parse_bool(const std::map<std::string, std::string>& values, const char* ke
   {
     return false;
   }
-  return fallback;
+  return std::nullopt;
+}
+
+bool parse_bool(const std::map<std::string, std::string>& values, const char* key, bool fallback)
+{
+  const auto it = values.find(key);
+  if( it == values.end() )
+  {
+    return fallback;
+  }
+  return bool_token(it->second).value_or(fallback);
 }
 
 std::string parse_string(const std::map<std::string, std::string>& values, const char* key,
@@ -110,7 +117,193 @@ SystemConfig SystemConfig::from_map(const std::map<std::string, std::string>& va
   cfg.auth_fail_limit = parse_int(values, "auth_fail_limit", cfg.auth_fail_limit);
   cfg.auth_fail_window_sec = parse_int(values, "auth_fail_window_sec", cfg.auth_fail_window_sec);
   cfg.probe_timeout_ms = parse_int(values, "probe_timeout_ms", cfg.probe_timeout_ms);
+  cfg.admin_token = parse_string(values, "admin_token", cfg.admin_token);
   return cfg;
+}
+
+std::map<std::string, std::string> SystemConfig::to_map() const
+{
+  auto flag = [](bool value) -> std::string
+  {
+    return value ? "1" : "0";
+  };
+  return {{"listen", listen},
+          {"public_host", public_host},
+          {"public_url", public_url},
+          {"region_id", region_id},
+          {"jwt_secret", jwt_secret},
+          {"jwt_ttl_sec", std::to_string(jwt_ttl_sec)},
+          {"admit_sec", std::to_string(admit_sec)},
+          {"join_hold_sec", std::to_string(join_hold_sec)},
+          {"host_heartbeat_interval_sec", std::to_string(host_heartbeat_interval_sec)},
+          {"host_heartbeat_misses", std::to_string(host_heartbeat_misses)},
+          {"max_threads", std::to_string(max_threads)},
+          {"stats_listen", stats_listen},
+          {"tls_cert", tls_cert},
+          {"tls_key", tls_key},
+          {"tls_min_version", tls_min_version},
+          {"http_gzip", flag(http_gzip)},
+          {"http_gzip_min_bytes", std::to_string(http_gzip_min_bytes)},
+          {"websocket_permessage_deflate", flag(websocket_permessage_deflate)},
+          {"websocket_deflate_level", std::to_string(websocket_deflate_level)},
+          {"websocket_max_window_bits", std::to_string(websocket_max_window_bits)},
+          {"retention_days", std::to_string(retention_days)},
+          {"max_message_bytes", std::to_string(max_message_bytes)},
+          {"max_connections", std::to_string(max_connections)},
+          {"max_outbound_queue_bytes", std::to_string(max_outbound_queue_bytes)},
+          {"max_concurrent_channels", std::to_string(max_concurrent_channels)},
+          {"max_channel_lifetime_sec", std::to_string(max_channel_lifetime_sec)},
+          {"max_idle_sec", std::to_string(max_idle_sec)},
+          {"max_udp_packet_bytes", std::to_string(max_udp_packet_bytes)},
+          {"max_bytes_per_sec_per_channel", std::to_string(max_bytes_per_sec_per_channel)},
+          {"max_players_per_lobby", std::to_string(max_players_per_lobby)},
+          {"max_password_length", std::to_string(max_password_length)},
+          {"max_frame_bytes", std::to_string(max_frame_bytes)},
+          {"relay_bind", relay_bind},
+          {"relay_port_start", std::to_string(relay_port_start)},
+          {"relay_port_end", std::to_string(relay_port_end)},
+          {"relay_tcp_enabled", flag(relay_tcp_enabled)},
+          {"relay_wt_enabled", flag(relay_wt_enabled)},
+          {"wt_listen", wt_listen},
+          {"cors_origins", cors_origins},
+          {"wt_ticket_sec", std::to_string(wt_ticket_sec)},
+          {"auth_fail_limit", std::to_string(auth_fail_limit)},
+          {"auth_fail_window_sec", std::to_string(auth_fail_window_sec)},
+          {"probe_timeout_ms", std::to_string(probe_timeout_ms)},
+          {"admin_token", admin_token}};
+}
+
+const std::vector<ConfigKey>& config_keys()
+{
+  using K = ConfigKind;
+  static const std::vector<ConfigKey> keys = {
+      {"listen", K::Address, true},
+      {"public_host", K::String, false},
+      {"public_url", K::String, false},
+      {"region_id", K::String, false},
+      {"jwt_secret", K::Secret, false},
+      {"jwt_ttl_sec", K::Int, false},
+      {"admit_sec", K::Int, false},
+      {"join_hold_sec", K::Int, false},
+      {"host_heartbeat_interval_sec", K::Int, false},
+      {"host_heartbeat_misses", K::Int, false},
+      {"max_threads", K::Int, true},
+      {"stats_listen", K::Address, true},
+      {"tls_cert", K::String, true},
+      {"tls_key", K::String, true},
+      {"tls_min_version", K::String, true},
+      {"http_gzip", K::Bool, false},
+      {"http_gzip_min_bytes", K::Int, false},
+      {"websocket_permessage_deflate", K::Bool, false},
+      {"websocket_deflate_level", K::Int, false},
+      {"websocket_max_window_bits", K::Int, false},
+      {"retention_days", K::Int, false},
+      {"max_message_bytes", K::Int, false},
+      {"max_connections", K::Int, false},
+      {"max_outbound_queue_bytes", K::Int, false},
+      {"max_concurrent_channels", K::Int, false},
+      {"max_channel_lifetime_sec", K::Int, false},
+      {"max_idle_sec", K::Int, false},
+      {"max_udp_packet_bytes", K::Int, false},
+      {"max_bytes_per_sec_per_channel", K::Int, false},
+      {"max_players_per_lobby", K::Int, false},
+      {"max_password_length", K::Int, false},
+      {"max_frame_bytes", K::Int, false},
+      {"relay_bind", K::String, false},
+      {"relay_port_start", K::Int, false},
+      {"relay_port_end", K::Int, false},
+      {"relay_tcp_enabled", K::Bool, false},
+      {"relay_wt_enabled", K::Bool, true},
+      {"wt_listen", K::Address, true},
+      {"cors_origins", K::String, false},
+      {"wt_ticket_sec", K::Int, false},
+      {"auth_fail_limit", K::Int, false},
+      {"auth_fail_window_sec", K::Int, false},
+      {"probe_timeout_ms", K::Int, false},
+      {"admin_token", K::Secret, false},
+  };
+  return keys;
+}
+
+const ConfigKey* find_config_key(const std::string& name)
+{
+  for( const auto& key : config_keys() )
+  {
+    if( name == key.name )
+    {
+      return &key;
+    }
+  }
+  return nullptr;
+}
+
+const char* config_kind_name(ConfigKind kind)
+{
+  switch( kind )
+  {
+  case ConfigKind::Int:
+    return "int";
+  case ConfigKind::Bool:
+    return "bool";
+  case ConfigKind::String:
+    return "string";
+  case ConfigKind::Secret:
+    return "secret";
+  case ConfigKind::Address:
+    return "address";
+  }
+  return "string";
+}
+
+std::optional<std::string> check_config_value(const ConfigKey& key, const std::string& value)
+{
+  const std::string name = key.name;
+  switch( key.kind )
+  {
+  case ConfigKind::Int:
+  {
+    std::size_t used = 0;
+    long long parsed = 0;
+    try
+    {
+      parsed = std::stoll(value, &used);
+    }
+    catch( ... )
+    {
+      return name + " must be an integer";
+    }
+    if( used != value.size() || parsed < 0 || parsed > std::numeric_limits<int>::max() )
+    {
+      return name + " must be a non-negative integer";
+    }
+    break;
+  }
+  case ConfigKind::Bool:
+    if( !bool_token(value) )
+    {
+      return name + " must be 1, 0, true, false, yes, or no";
+    }
+    break;
+  case ConfigKind::Address:
+    if( !parse_host_port(value) )
+    {
+      return name + " must be host:port";
+    }
+    break;
+  case ConfigKind::Secret:
+  case ConfigKind::String:
+    break;
+  }
+  if( name == "tls_min_version" && value != "1.2" && value != "1.3" )
+  {
+    return "tls_min_version must be 1.2 or 1.3";
+  }
+  if( (name == "jwt_secret" || name == "admin_token" || name == "tls_cert" || name == "tls_key") &&
+      value.empty() )
+  {
+    return name + " cannot be empty";
+  }
+  return std::nullopt;
 }
 
 void clamp_game(GameRecord& game, const SystemConfig& system)

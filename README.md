@@ -10,7 +10,7 @@ The wire API is specified in [PROTOCOL.md](PROTOCOL.md).
 
 ## Requirements
 
-- CMake 3.28 or newer
+- CMake 3.25 or newer
 - A C++20 compiler
 - OpenSSL 3
 
@@ -30,7 +30,7 @@ cmake --build out/build/x64-Debug --config Debug
 ctest --test-dir out/build/x64-Debug -C Debug --output-on-failure
 ```
 
-The Windows build copies `migrations/sqlite` and the OpenSSL DLLs (`libssl-4-x64.dll`, `libcrypto-4-x64.dll`) next to `matchmaker.exe` and `matchmaker_tests.exe`.
+The Windows build copies `migrations/sqlite`, `web/admin/index.html`, and the OpenSSL DLLs (`libssl-4-x64.dll`, `libcrypto-4-x64.dll`) next to `matchmaker.exe` and `matchmaker_tests.exe`.
 
 Debian:
 
@@ -40,7 +40,7 @@ cmake --build out/build -j
 ctest --test-dir out/build --output-on-failure
 ```
 
-The Debian build copies `migrations/sqlite` next to the `matchmaker` and `matchmaker_tests` binaries. OpenSSL stays the shared library from `libssl-dev`.
+The Debian build copies `migrations/sqlite` and `web/admin/index.html` next to the `matchmaker` and `matchmaker_tests` binaries. OpenSSL stays the shared library from `libssl-dev`.
 
 ## Run
 
@@ -200,8 +200,27 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`.
 | `auth_fail_limit` | `20` | Failed auths per source before rate limiting |
 | `auth_fail_window_sec` | `60` | Auth failure window |
 | `probe_timeout_ms` | `500` | Host RTT probe timeout |
+| `admin_token` | empty | Bearer token for `/admin`; empty turns the admin page and API off |
 
 `regions` rows are `id`, `public_url`, and `sort_order`. The default row is `local` / `https://localhost`.
+
+## Admin
+
+The process serves an operator page at `/admin` on the `listen` port. It edits config, games, and regions, reloads them, and lists and edits every live lobby. It is off until `admin_token` is set:
+
+```sql
+UPDATE config SET value = 'replace-with-a-long-random-admin-token' WHERE key = 'admin_token';
+```
+
+Then reload (`SIGHUP` or `SIGBREAK`) or restart, and open `https://<public host>/admin`. The page asks for the token, keeps it in the tab's session storage, and sends it as `Authorization: Bearer` on every API call. While `admin_token` is empty, `/admin` and `/admin/api/v1/*` answer 404. A wrong token is 401, and failures count toward `auth_fail_limit` per source address. Game JWTs are not admin credentials.
+
+`/admin` paths ignore `cors_origins`, so a listed game origin cannot call them from a browser.
+
+Edits are written to SQLite and are not live until Reload, which runs the same path as `SIGHUP`. The config screen marks each key `reload` or `restart`. Restart-only keys (`listen`, `stats_listen`, `tls_cert`, `tls_key`, `tls_min_version`, `max_threads`, `wt_listen`, `relay_wt_enabled`) are stored now and bind the next time the process starts; their live column shows the startup value. Values are checked before they are stored, because a bad integer or boolean otherwise falls back to the compiled-in default on reload.
+
+Games are created with a raw token, which the server hashes; the token and its hash are never returned. A game with live lobbies cannot be deleted, and neither can the region named by `region_id`.
+
+Lobby edits are the host controls (phase, slots, late join, lock, short code, metadata), plus kick, close, and relay release. They emit the same events as the host ops, and the host receives them too. Passwords and relay tokens never appear in admin responses. The page is `web/admin/index.html`, copied next to the binary at build time. The API is in [PROTOCOL.md](PROTOCOL.md#admin).
 
 ## Layout
 
@@ -209,11 +228,11 @@ Rows live in `config`. Booleans accept `1`/`true`/`yes` and `0`/`false`/`no`.
 | --- | --- |
 | `src/` | Server: HTTPS, lobby WebSocket, WebTransport (`wt.cpp`, `h3.cpp`), UDP/TCP relay, SQLite, JWT |
 | `include/matchmaker/client.hpp` | In-tree HTTPS and WebSocket client linked by the tests |
-| `web/` | Browser client (`src/matchmaker.js`) and two-tab demo (`demo/index.html`) |
+| `web/` | Browser client (`src/matchmaker.js`), two-tab demo (`demo/index.html`), and the operator page (`admin/index.html`) |
 | `tests/` | doctest suites (`matchmaker_tests`), including a small ngtcp2 WebTransport peer (`wt_peer.cpp`) |
 | `migrations/sqlite/` | Schema and default config |
 | `PROTOCOL.md` | HTTP, WebSocket, WebTransport, and relay specification |
 
 ## Logs
 
-The `logs` table records startup, shutdown, config reload, auth failure (game id only), lobby create and close, relay allocate and release, and errors. Chat, ready state, custom messages, aliases, and forwarded packets are not logged. Rows older than `retention_days` are pruned at startup and about once an hour.
+The `logs` table records startup, shutdown, config reload, auth failure (game id only), lobby create and close, relay allocate and release, admin writes (category `admin`: key names, ids, and the lobby op, never values of secrets), and errors. Chat, ready state, custom messages, aliases, and forwarded packets are not logged. Rows older than `retention_days` are pruned at startup and about once an hour.
