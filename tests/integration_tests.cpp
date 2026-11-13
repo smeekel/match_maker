@@ -518,7 +518,7 @@ TEST_CASE("admin is off while admin_token is empty")
 
 TEST_CASE("admin config writes stay pending until reload")
 {
-  Server server({{"admin_token", kAdmin}});
+  Server server(std::map<std::string, std::string>{{"admin_token", kAdmin}});
   Client client = server.client();
 
   auto page = client.request("GET", "/admin", {}, {}, false);
@@ -567,7 +567,7 @@ TEST_CASE("admin config writes stay pending until reload")
 
 TEST_CASE("admin auth failures are rate limited")
 {
-  Server server({{"admin_token", kAdmin}, {"auth_fail_limit", "2"}});
+  Server server(std::map<std::string, std::string>{{"admin_token", kAdmin}, {"auth_fail_limit", "2"}});
   Client client = server.client();
   CHECK(client.request("GET", "/admin/api/v1/config", {}, "wrong-1", false).status == 401);
   CHECK(client.request("GET", "/admin/api/v1/config", {}, "wrong-2", false).status == 401);
@@ -576,7 +576,7 @@ TEST_CASE("admin auth failures are rate limited")
 
 TEST_CASE("admin games and regions publish on reload")
 {
-  Server server({{"admin_token", kAdmin}});
+  Server server(std::map<std::string, std::string>{{"admin_token", kAdmin}});
   Client client = server.client();
 
   CHECK(admin(client, "POST", "/games", {{"name", "No token"}}).status == 400);
@@ -633,7 +633,7 @@ TEST_CASE("admin games and regions publish on reload")
 
 TEST_CASE("admin lobby controls reach members and hide secrets")
 {
-  Server server({{"admin_token", kAdmin}});
+  Server server(std::map<std::string, std::string>{{"admin_token", kAdmin}});
   Client ops = server.client();
   Client host = server.client();
   Client guest = server.client();
