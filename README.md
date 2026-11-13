@@ -12,11 +12,11 @@ The wire API is specified in [PROTOCOL.md](PROTOCOL.md).
 
 - CMake 3.25 or newer
 - A C++20 compiler
-- OpenSSL 3
+- OpenSSL 3.5 or newer. ngtcp2 uses the OpenSSL 3.5 QUIC TLS API.
 
 Windows: MSVC, and OpenSSL at `C:/Program Files/OpenSSL-Win64`, using the VC x64 MD libraries (`lib/VC/x64/MD`). Override the root with `-DOPENSSL_ROOT_DIR=...` if it lives elsewhere.
 
-Debian: `build-essential`, `cmake`, and `libssl-dev`. The binary links the system `libssl` and `libcrypto`.
+Debian: `build-essential`, `cmake`, `perl`, and `libssl-dev`. Debian 13's OpenSSL is new enough and the binary links that shared library. On older Debian, configure downloads OpenSSL 3.5.4, builds it, and links it statically.
 
 The first configure downloads Boost 1.90 (Beast and Asio), the SQLite amalgamation, nlohmann/json, zlib, doctest, ngtcp2 1.26 (QUIC, built against the OpenSSL above), and nghttp3 1.19 (QPACK).
 
@@ -40,7 +40,7 @@ cmake --build out/build -j
 ctest --test-dir out/build --output-on-failure
 ```
 
-The Debian build copies `migrations/sqlite` and `web/admin/index.html` next to the `matchmaker` and `matchmaker_tests` binaries. OpenSSL stays the shared library from `libssl-dev`.
+The Debian build copies `migrations/sqlite` and `web/admin/index.html` next to the `matchmaker` and `matchmaker_tests` binaries. OpenSSL is the system library when it is 3.5 or newer, and the static library built during configure otherwise.
 
 ## Run
 

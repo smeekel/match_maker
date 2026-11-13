@@ -57,13 +57,108 @@ FetchContent_Declare(zlib
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(nlohmann_json doctest zlib)
 
+# ngtcp2 1.26 calls the OpenSSL 3.5 QUIC TLS API (SSL_set_quic_tls_cbs).
+set(MM_OPENSSL_VERSION 3.5.4)
+
+function(mm_openssl_headers_ok include_dir out)
+  set(${out} FALSE PARENT_SCOPE)
+  if(NOT EXISTS "${include_dir}/openssl/opensslv.h")
+    return()
+  endif()
+  file(STRINGS "${include_dir}/openssl/opensslv.h" major_line
+    REGEX "^#[ \t]*define[ \t]+OPENSSL_VERSION_MAJOR[ \t]+[0-9]+")
+  file(STRINGS "${include_dir}/openssl/opensslv.h" minor_line
+    REGEX "^#[ \t]*define[ \t]+OPENSSL_VERSION_MINOR[ \t]+[0-9]+")
+  if(NOT major_line OR NOT minor_line)
+    return()
+  endif()
+  string(REGEX REPLACE ".*MAJOR[ \t]+([0-9]+).*" "\\1" major "${major_line}")
+  string(REGEX REPLACE ".*MINOR[ \t]+([0-9]+).*" "\\1" minor "${minor_line}")
+  if(major GREATER 3 OR (major EQUAL 3 AND minor GREATER_EQUAL 5))
+    set(${out} TRUE PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(mm_build_openssl_35)
+  set(archive "${MM_DEPS}/openssl-${MM_OPENSSL_VERSION}.tar.gz")
+  mm_fetch(OpenSSL
+    "https://github.com/openssl/openssl/releases/download/openssl-${MM_OPENSSL_VERSION}/openssl-${MM_OPENSSL_VERSION}.tar.gz"
+    "${archive}")
+  set(src "${MM_DEPS}/openssl-${MM_OPENSSL_VERSION}")
+  if(NOT EXISTS "${src}/Configure")
+    file(ARCHIVE_EXTRACT INPUT "${archive}" DESTINATION "${MM_DEPS}")
+  endif()
+  set(prefix "${CMAKE_BINARY_DIR}/openssl")
+  if(NOT EXISTS "${prefix}/lib/libssl.a" OR NOT EXISTS "${prefix}/include/openssl/ssl.h")
+    find_program(MM_PERL perl)
+    if(NOT MM_PERL)
+      message(FATAL_ERROR
+        "OpenSSL 3.5 or newer is required for QUIC. Install it, or install perl so CMake can build OpenSSL ${MM_OPENSSL_VERSION}.")
+    endif()
+    include(ProcessorCount)
+    ProcessorCount(nproc)
+    if(nproc EQUAL 0)
+      set(nproc 1)
+    endif()
+    message(STATUS "System OpenSSL is older than 3.5. Building OpenSSL ${MM_OPENSSL_VERSION}")
+    execute_process(
+      COMMAND "${MM_PERL}" "${src}/Configure"
+        --prefix=${prefix} --libdir=lib no-shared no-tests -fPIC
+      WORKING_DIRECTORY "${src}"
+      RESULT_VARIABLE rc
+      COMMAND_ECHO STDOUT)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "OpenSSL configure failed (${rc})")
+    endif()
+    execute_process(
+      COMMAND make -j ${nproc}
+      WORKING_DIRECTORY "${src}"
+      RESULT_VARIABLE rc
+      COMMAND_ECHO STDOUT)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "OpenSSL build failed (${rc})")
+    endif()
+    execute_process(
+      COMMAND make install_sw
+      WORKING_DIRECTORY "${src}"
+      RESULT_VARIABLE rc
+      COMMAND_ECHO STDOUT)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "OpenSSL install failed (${rc})")
+    endif()
+  endif()
+  set(MM_OPENSSL_PREFIX "${prefix}" PARENT_SCOPE)
+endfunction()
+
 if(WIN32)
   set(OPENSSL_ROOT_DIR "C:/Program Files/OpenSSL-Win64" CACHE PATH "OpenSSL root")
   set(OPENSSL_INCLUDE_DIR "${OPENSSL_ROOT_DIR}/include")
   set(OPENSSL_SSL_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libssl.lib")
   set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_ROOT_DIR}/lib/VC/x64/MD/libcrypto.lib")
+else()
+  find_path(MM_SYS_OPENSSL_INCLUDE openssl/opensslv.h)
+  set(MM_SYS_OPENSSL_OK FALSE)
+  if(MM_SYS_OPENSSL_INCLUDE)
+    mm_openssl_headers_ok("${MM_SYS_OPENSSL_INCLUDE}" MM_SYS_OPENSSL_OK)
+  endif()
+  if(NOT MM_SYS_OPENSSL_OK)
+    mm_build_openssl_35()
+    set(OPENSSL_USE_STATIC_LIBS TRUE CACHE BOOL "" FORCE)
+    set(OPENSSL_ROOT_DIR "${MM_OPENSSL_PREFIX}" CACHE PATH "" FORCE)
+    unset(OPENSSL_INCLUDE_DIR CACHE)
+    unset(OPENSSL_SSL_LIBRARY CACHE)
+    unset(OPENSSL_CRYPTO_LIBRARY CACHE)
+    unset(OPENSSL_LIBRARIES CACHE)
+    unset(OPENSSL_SSL_LIBRARIES CACHE)
+    unset(OPENSSL_CRYPTO_LIBRARIES CACHE)
+    unset(OPENSSL_VERSION CACHE)
+    unset(OPENSSL_FOUND CACHE)
+  endif()
 endif()
 find_package(OpenSSL REQUIRED)
+if(OPENSSL_VERSION VERSION_LESS "3.5.0")
+  message(FATAL_ERROR "OpenSSL ${OPENSSL_VERSION} is too old. ngtcp2 requires OpenSSL 3.5 or newer.")
+endif()
 find_package(Threads REQUIRED)
 
 set(NGTCP2_VERSION 1.26.0)
